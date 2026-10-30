@@ -1,0 +1,8 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/cmake_install.cmake",
+		"C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/hook_dll/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

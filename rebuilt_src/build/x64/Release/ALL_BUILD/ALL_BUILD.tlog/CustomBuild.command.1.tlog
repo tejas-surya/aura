@@ -1,0 +1,10 @@
+^C:\USERS\LENOVO\DESKTOP\REA2\REBUILT_SRC\CMAKELISTS.TXT
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/LENOVO/Desktop/REA2/rebuilt_src -BC:/Users/LENOVO/Desktop/REA2/rebuilt_src/build --check-stamp-file C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/CMakeFiles/generate.stamp
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

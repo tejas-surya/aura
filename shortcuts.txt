@@ -1,0 +1,83 @@
+================================================================================
+                           MYOWNAPP - SHORTCUT CHEATSHEET
+================================================================================
+
+All shortcuts work globally from ANY application or exam window.
+You can customize key bindings anytime in settings.json or in the in-app Settings.
+
+--------------------------------------------------------------------------------
+1. STEALTH & VISIBILITY CONTROLS
+--------------------------------------------------------------------------------
+Ctrl + Shift + H          Show / Hide Application (toggle visibility / cloak)
+Ctrl + Shift + Backspace  PANIC HIDE (Emergency instant disappearance)
+                          - Instantly sets opacity to 0% and turns on text-only mode
+                          - Moves window completely off-screen to the left
+                          
+                          [!] HOW TO RESTORE APP AFTER PANIC HIDE:
+                              1. Press Ctrl + Shift + H
+                                 (Unhides / uncloaks the window)
+                              2. Keep Ctrl + Shift + Right pressed
+                                 (Hold down to slide the window back onto your screen)
+                              3. Press Ctrl + Shift + T
+                                 (Toggles text-only mode back to normal UI, or keep
+                                  text-only mode for stealth reading)
+                              4. Press Ctrl + Shift + . (Optional)
+                                 (Increases opacity if needed)
+
+Ctrl + Shift + T          Text-Only Mode (Strips backgrounds, images, and ads;
+                          renders transparent window with pure stealth text)
+Ctrl + Shift + M          Mouse-Only Mode (Shows text only when hovered)
+Ctrl + Shift + D          Click-Through Mode (Clicks pass directly to the app below)
+Ctrl + Shift + ,          Decrease Window Opacity (more transparent)
+Ctrl + Shift + .          Increase Window Opacity (more opaque)
+
+--------------------------------------------------------------------------------
+2. AI ASSISTANT & AUTOMATION
+--------------------------------------------------------------------------------
+Ctrl + Shift + A          Screenshot (Captures focused target window & sends to AI)
+Ctrl + Shift + E          Extract UI Text (Scrapes focused window via UIAutomation)
+Ctrl + Shift + Enter      Extract & Submit to AI (Extracts text and auto-submits)
+Ctrl + Shift + F          Type Last Answer (Simulates human typing into target field)
+Ctrl + Shift + V          Voice Copilot (Speak question directly into microphone)
+Ctrl + Shift + U          Rotate AI Website (Quickly switch between configured URLs)
+
+--------------------------------------------------------------------------------
+3. WINDOW POSITION & RESIZING
+--------------------------------------------------------------------------------
+Ctrl + Shift + Left       Move Window Left
+Ctrl + Shift + Right      Move Window Right (Hold down to slide quickly)
+Ctrl + Shift + Up         Move Window Up
+Ctrl + Shift + Down       Move Window Down
+Ctrl + Plus (=)           Zoom In / Increase Text Size (+10%)
+Ctrl + Minus (-)          Zoom Out / Decrease Text Size (-10%)
+Ctrl + 0                  Reset Text Size to 100%
+
+--------------------------------------------------------------------------------
+4. PAGE SCROLLING (WITHOUT FOCUSING)
+--------------------------------------------------------------------------------
+Ctrl + Shift + Wheel      Scroll Internal Browser Up / Down smoothly from anywhere
+Ctrl + Up                 Scroll Page Up
+Ctrl + Down               Scroll Page Down
+
+--------------------------------------------------------------------------------
+5. HUMAN-LIKE AUTO-TYPING SPEED
+--------------------------------------------------------------------------------
+Ctrl + Shift + [          Decrease Typing Speed (Slower, stealthier human pace)
+Ctrl + Shift + ]          Increase Typing Speed (Faster typing pace)
+
+--------------------------------------------------------------------------------
+6. PANIC HIDE & QUICK RECOVERY SUMMARY
+--------------------------------------------------------------------------------
+• Trigger Panic Hide : Press Ctrl + Shift + Backspace
+  App vanishes immediately: opacity drops to 0, text-only engages, and the
+  window jumps far off-screen to the left.
+
+• Restore into View  :
+  1) Ctrl + Shift + H        -> Unhides / uncloaks the app.
+  2) Ctrl + Shift + Right    -> Keep pressed until the window slides back into view.
+  3) Ctrl + Shift + T        -> Exits text-only mode and restores normal browser view.
+  4) Ctrl + Shift + .        -> Increases opacity if you need higher contrast.
+
+================================================================================
+Tip: You can edit or rebind any hotkey inside settings.json.
+================================================================================

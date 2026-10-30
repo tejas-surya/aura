@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "rea": {
+      "command": "cmd.exe",
+      "args": [
+        "/d",
+        "/c",
+        "rea-agents",
+        "mcp"
+      ],
+      "env": {
+        "GHIDRA_INSTALL_DIR": "C:\\Users\\LENOVO\\Tools\\ghidra_12.1.4_PUBLIC",
+        "JAVA_HOME": "C:\\Users\\LENOVO\\Tools\\jdk-21.0.12.1+1"
+      }
+    }
+  }
+}
