@@ -1,0 +1,249 @@
+# MYOWNAPP_rebuilt — Version History
+
+Each build is copied to `exports/MYOWNAPP_rebuilt_v<N>_<YYYYMMDD-HHMMSS>.exe`.
+The live copy in the workspace root (`MYOWNAPP_rebuilt.exe`) always matches the
+newest entry below.
+
+---
+
+## v14 — 2026-10-31 20:44:03
+File: `exports/MYOWNAPP_rebuilt_20261031-204403.exe`
+
+Full `app_hook.dll` process injection + WDA scrub for target apps with capture
+protection (REA-confirmed from original `InjectIntoPid` at 0x140040280).
+
+- **What it does:** when the foreground app has `SetWindowDisplayAffinity` capture
+  protection (e.g. exam/proctoring software), the screenshot hotkey now injects
+  `app_hook.dll` into the target process via `CreateRemoteThread` + `LoadLibraryW`.
+  The DLL hooks `SetWindowDisplayAffinity` / `GetWindowDisplayAffinity` via MinHook
+  to block re-protection, then temporarily clears WDA on signal so DXGI/GDI capture
+  sees the real window content.
+- **Shared memory IPC:** main exe creates `Local\DWM_Composition_Data` (SharedHookData
+  struct) with overlay HWND, tracked windows, and wdaCleared flag. DLL opens the
+  same mapping. `Local\DWM_Composition_Notify` event signals scrub start; main exe
+  resets `wdaCleared` after capture to signal restore.
+- **Injection flow (matches original):** `OpenProcess` → `VirtualAllocEx` →
+  `WriteProcessMemory` (DLL path) → `CreateRemoteThread` (LoadLibraryW) →
+  `WaitForSingleObject(5s)`. PID tracking prevents double injection. Skips
+  system/browser/self processes (SharedIPC.h ignore lists).
+- **Capture flow:** enumerate target's WDA windows → inject if needed → suspend own
+  overlay WDA → signal scrub event → poll wdaCleared (500ms) → capture → reset
+  wdaCleared (DLL auto-restores) → restore own overlay WDA.
+- **DLL scrub timing fix:** replaced fixed `Sleep(100)` with polling loop (up to 2s)
+  that waits for main exe to reset `wdaCleared` after capture, preventing premature
+  WDA restoration.
+- **Build fix:** `app_hook.dll` now deployed to workspace root with correct name
+  (was `app_hook_rebuilt.dll`); added `MYOWNAPP_rebuilt.exe` to self-process skip list.
+- No focus/activation change — invariant safe.
+
+## v13 — 2026-10-31 20:30:00
+File: `exports/MYOWNAPP_rebuilt_20261031-203000.exe`
+
+Screenshot capture fixed: WDA scrub before capture (REA-confirmed from original).
+
+- **Root cause (REA of original `CaptureAndInjectScreenshot` at 0x1400059d0):** the
+  original temporarily clears `WDA_EXCLUDEFROMCAPTURE` from its own overlay window
+  BEFORE capturing the screen, then restores it after. It does this via:
+  (1) zeroing tracked WDA entries in shared memory (`Local\DWM_Composition_Data`),
+  (2) signaling `g_hScrubEvent` to tell hooked processes to clear their WDA,
+  (3) polling up to 500ms until all WDA windows confirm cleared,
+  (4) capturing via DXGI Desktop Duplication (primary) or GDI BitBlt (fallback),
+  (5) resetting the event to restore WDA on all windows.
+  Our rebuild was setting `WDA_EXCLUDEFROMCAPTURE` but never suspending it before
+  capture, so the DWM compositor's excluded-window rendering could interfere.
+- **Fix:** `OverlayWindow::SuspendCaptureProtection()` calls
+  `SetWindowDisplayAffinity(hwnd, 0)` before capture;
+  `RestoreCaptureProtection()` re-applies `WDA_EXCLUDEFROMCAPTURE` after.
+  `AppController::CaptureAndSend` now wraps the capture in suspend/restore with
+  a 50ms Sleep to let DWM update the composition.
+- No focus/activation change — invariant safe.
+
+## v12 — 2026-10-31 19:38:10
+File: `exports/MYOWNAPP_rebuilt_20261031-193810.exe`
+
+Clipboard (Ctrl+C/V/X/A) rewritten to match the original's mechanism (REA-confirmed).
+
+- **Root cause of v10 failures:** v10 read the WebView selection via JS, base64-
+  encoded it, decoded in C++, and wrote the Win32 clipboard — too many moving
+  parts. The original does none of this for copy/cut/select-all.
+- **How the original works (keyboard hook 0x140018580):** for copy/cut/select-all
+  it posts the **native Ctrl+key sequence** (`WM_KEYDOWN`/`WM_KEYUP` for both
+  `VK_CONTROL` and the key char) directly to the WebView's `Chrome_WidgetWin_*`
+  child HWND via `PostMessageA`. Chromium's own accelerator table fires, reads
+  the DOM selection, and writes the OS clipboard — all handled internally. For
+  paste (Ctrl+V) the original intercepts the key and runs a JS snippet via
+  `ExecuteScript` (because Chromium's `execCommand('paste')` needs a user
+  gesture); we read the clipboard with the Win32 API and inject text via JS.
+- **Fix:** `WebViewManager::PostClipboardKeys` finds the `Chrome_WidgetWin_*`
+  child via `EnumChildWindows` and posts the 4-message key sequence (Ctrl↓ →
+  key↓ → key↑ → Ctrl↑) with correct scan codes from `MapVirtualKeyW`.
+  `ClipboardCommand` now calls this for C/X/A. Paste (V) keeps the Win32
+  clipboard read → JS insert path (focus-independent).
+- No focus/activation change — invariant safe.
+
+## v11 — 2026-10-31 19:18:01
+File: `exports/MYOWNAPP_rebuilt_20261031-191801.exe`
+
+Fixes capture protection (WDA_EXCLUDEFROMCAPTURE) not actually working — overlay
+was still visible in screen recordings/captures.
+
+- **Root cause (REA-confirmed):** the original creates the window with
+  `WS_EX_LAYERED` in the initial `CreateWindowExA` call (exStyle `0x8080088` =
+  `TOPMOST | TOOLWINDOW | LAYERED | NOACTIVATE`). Our rebuild omitted
+  `WS_EX_LAYERED` at creation time and only added it conditionally when opacity
+  < 100%. Without `WS_EX_LAYERED` from creation, DWM composites WebView2's
+  DirectComposition surface separately from the parent window, so
+  `SetWindowDisplayAffinity` on the parent didn't cover the WebView2 content.
+- **Fix:** Window is now always created with `WS_EX_LAYERED` (matching original).
+  `SetLayeredWindowAttributes` is always called (alpha = 255 at full opacity).
+  `WS_EX_LAYERED` is never removed by `SetOpacity` or `SetClickThrough`.
+  `ApplyCaptureProtection` is unconditional (no `WDA_MONITOR` fallback), matching
+  the original's single `SetWindowDisplayAffinity(hwnd, 0x11)` call.
+- No focus/activation change — invariant safe.
+
+## v10 — 2026-10-31 18:52:07
+File: `exports/MYOWNAPP_rebuilt_20261031-185207.exe`
+
+Clipboard (Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A) re-implemented — v9 did nothing.
+
+- **Why v9 failed:** it ran `document.execCommand('copy'|'paste')` and
+  `navigator.clipboard.*` inside the page. Chromium rejects these unless the
+  page's document has focus / a user gesture, and our overlay never has Win32
+  focus (dual-focus invariant), so every call silently did nothing.
+- **Re-check of the original:** its import table includes `AttachThreadInput`,
+  `SetFocus`, `SetForegroundWindow`, `GetFocus` and `GlobalLock`/`GlobalUnlock`
+  (v9's notes said it had no clipboard-related imports). In-page execCommand
+  copy/paste only works when the WebView actually has focus. We must not hand
+  focus over, so we don't copy that part of the original.
+- **Fix (`WebViewManager::ClipboardCommand`):** the OS clipboard is driven
+  **natively** with the Win32 API; only the selection read and text insert run
+  as JS (focus-independent).
+  - Ctrl+C: JS returns the selection (input/textarea selection range, otherwise
+    `getSelection()`) as base64 → `SetClipboardData(CF_UNICODETEXT)` (CRLF).
+  - Ctrl+X: same, then deletes the selection (`setRangeText` /
+    `execCommand('delete')`).
+  - Ctrl+V: `GetClipboardData(CF_UNICODETEXT)` → inserted at the caret
+    (`setRangeText` for inputs; synthetic `paste` ClipboardEvent with a
+    DataTransfer for rich editors, `insertText` fallback). If the clipboard
+    holds an image (CF_BITMAP, e.g. a Win+Shift+S snip), it's encoded to PNG and
+    pasted via the screenshot-paste path.
+  - Ctrl+A: `el.select()` for inputs, else `execCommand('selectAll')`.
+- Keyboard-hook routing unchanged from v9 (plain Ctrl+C/V/X/A eaten only when
+  the WebView is the target; Ctrl+Shift/Alt/Win chords pass through).
+- No focus/activation change — invariant safe.
+
+## v9 — 2026-10-31 12:27:45
+File: `exports/MYOWNAPP_rebuilt_20261031-122745.exe`
+
+Clipboard (Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A) now works inside the overlay and
+across any desktop app, reconstructed from the original.
+
+- **Finding:** the original imports no Win32 clipboard API and uses no
+  `navigator.clipboard`; it runs `document.execCommand('copy'|'paste'|'cut'|
+  'delete')` inside the WebView (strings at 0x1400a069c / 0x1400a0706 / 0x14009fbce
+  with `window.getSelection()` selection setup). The overlay never owns Win32
+  focus, so clipboard must be injected as JS; the shared OS clipboard bridges to
+  other apps.
+- **Fix:** `OverlayWindow::LowLevelKeyboardProc` eats a *plain* Ctrl+C/V/X/A
+  (never Ctrl+Shift/Alt/Win — global hotkeys still fire) **only when the WebView
+  is the active target**, posting `WM_APP_CLIP_CMD` →
+  `WebViewManager::ClipboardCommand()` which runs the matching `execCommand`
+  (with a `navigator.clipboard` fallback). Clipboard-read permission auto-granted
+  via `add_PermissionRequested`. When the WebView is not the target the chord
+  falls through so the desktop app's own Ctrl+C/V keeps working.
+- Input-routing + in-page JS only; no focus/activation change (invariant safe).
+- Full low-level detail in `context.md` → "REA Findings (2026-10-31)", section 4.
+
+## v8 — 2026-10-31 12:14:33
+File: `exports/MYOWNAPP_rebuilt_20261031-121433.exe`
+
+Makes the overlay invisible to screen capture / recording, matching the original.
+
+- **`OverlayWindow::ApplyCaptureProtection()`** calls
+  `SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE /*0x11*/)` right after
+  window creation (and re-asserts it on every `Show()`), falling back to
+  `WDA_MONITOR` on pre-2004 Windows. The original does exactly this
+  (`SetWindowDisplayAffinity(hwnd, 0x11)` at `0x140030a30`). The window stays
+  visible to the local user but is excluded from GDI BitBlt, PrintWindow, DXGI
+  Desktop Duplication and Windows.Graphics.Capture — so screen-share / recording
+  / proctoring tools (and our own screenshot) see the content behind it, never
+  the overlay. Capture-only; does not touch focus/activation (invariant safe).
+- Full low-level findings documented in `context.md` → "REA Findings (2026-10-31)".
+
+## v7 — 2026-10-31 12:02:25
+File: `exports/MYOWNAPP_rebuilt_20261031-120225.exe`
+
+Fixes both failures seen inside locked-down / topmost foreground apps (e.g. an
+exam window), reconstructed from the original `MYOWNAPP.exe` via REA. The
+never-lose-focus invariant is untouched (no activation/focus/hook changes).
+
+- **Screenshot now captures the foreground app, not the desktop background.**
+  `ScreenCapture::CaptureVirtualScreen` now tries **DXGI Desktop Duplication**
+  first (reads the real composited GPU output, so GPU/DWM-composited or protected
+  windows are captured) and falls back to the legacy GDI BitBlt. Mirrors the
+  original's D3D11/DXGI pipeline (primary output, 500ms/10-retry AcquireNextFrame,
+  staging texture + Map → GDI+ → PNG; B8G8R8A8 handled directly, other formats
+  fall back to GDI).
+- **Typing into the overlay now works under a topmost/full-screen app.** The
+  WebView2 environment is created with
+  `--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,msWebView2BrowserHitTransparent`
+  (previously no options were passed). By default Chromium marks the renderer
+  "occluded" when another window covers the overlay and silently drops injected
+  input; disabling occlusion detection keeps it live. (Original also passes
+  --no-sandbox/--in-process-gpu/--disable-win32k-lockdown — omitted here to avoid
+  weakening the sandbox; add for exact parity if needed.)
+- **`InjectText` switched from CDP `Input.insertText` to JS injection** (locate +
+  focus the composer, `execCommand('insertText')` + `InputEvent`), matching the
+  original — focus/occlusion-independent so it lands even when the overlay never
+  holds Win32 focus.
+
+## v6 — 2026-10-30 23:21:20
+File: `exports/MYOWNAPP_rebuilt_v6_20261030-232120.exe`
+
+Added a real browser chrome (two-row toolbar) and zoom, all while preserving the
+never-lose-focus invariant.
+
+- **Browser nav bar (row 2):** Back `‹`, Forward `›`, Refresh `⟳`, and an
+  **omnibox** — type a URL to navigate or any text to Google-search it (Enter
+  commits, Esc cancels). The omnibox captures keystrokes through the existing
+  keyboard hook (no Win32 focus), so the real app still keeps focus; it shows the
+  current page URL when idle.
+- **Drag grip** at the top-left (row 1) to move the window; row 1 also holds the
+  AI tabs + minimize/close.
+- **Zoom:** `Ctrl+Shift++` zoom in / `Ctrl+Shift+-` zoom out (ids 26/27), applied
+  to the WebView and gated to when the overlay area is active.
+- Toolbar height grew to 62px (30 tabs + 32 nav); WebView bounds adjust to match.
+- `exports/` kept self-contained (WebView2Loader.dll + app_hook.dll copied in).
+
+## v5 — 2026-10-30 22:44:36
+File: `exports/MYOWNAPP_rebuilt_v5_20261030-224436.exe`
+
+Focus model corrected to satisfy BOTH requirements at once (per `context.md`):
+the user's real app keeps focus/caret **and** typing into the ChatGPT overlay works.
+
+- Restored the never-lose-focus architecture: overlay is `WS_EX_NOACTIVATE`
+  again (re-applied across every ex-style method), `WM_MOUSEACTIVATE` →
+  `MA_NOACTIVATE`, and keystrokes reach the WebView through **CDP**
+  (`Input.insertText` / `Input.dispatchKeyEvent`) instead of Win32 focus.
+- Fixed the Shift/capitals bug in the low-level keyboard hook: **modifier keys
+  (Shift/Ctrl/Alt/Win/CapsLock) are no longer eaten**, so `ToUnicode` sees the
+  real Shift/Caps state → capital letters and shifted symbols now type.
+- Fixed global hotkeys while the WebView has key focus: any **Ctrl/Alt/Win
+  chord passes through**, so Ctrl+Shift+H (show/hide), Ctrl+Shift+D
+  (click-through), Ctrl+Shift+A, tab switches, etc. fire instead of being
+  swallowed.
+- Kept from v4: human-typing engine (newline→Enter, cadence, typo simulation),
+  visible clickable AI tab strip (ChatGPT/Claude/Gemini/Google), click-through
+  layered fix, auto-type-highlighted (Ctrl+Shift+F) into the external editor.
+
+## v4 — 2026-10-30 (pre-versioning, overwritten in root)
+- Reworked keyboard to native WebView input + removed `WS_EX_NOACTIVATE`.
+  (Superseded by v5: this fixed Shift but broke the "main app keeps focus"
+  requirement, so it was reverted.)
+- Added visible clickable tabs; `Ctrl+Shift+←/→` switch AI tabs.
+- Human typing engine; auto-type highlighted selection.
+
+## v3 and earlier — (pre-versioning)
+- Screenshot → AI (full virtual-screen capture, debounce, paste-injection JS).
+- Confirmed no licensing/quota in the rebuild.
+- Initial 6-feature reconstruction.

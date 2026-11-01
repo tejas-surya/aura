@@ -12,6 +12,7 @@ OverlayWindow* OverlayWindow::s_instance_ = nullptr;
 HHOOK OverlayWindow::s_keyboardHook_ = nullptr;
 HHOOK OverlayWindow::s_mouseHook_ = nullptr;
 bool OverlayWindow::s_keyTargetWebView_ = false;
+bool OverlayWindow::s_urlEditing_ = false;
 
 OverlayWindow::OverlayWindow(AppController& controller)
     : controller_(controller) {
@@ -37,7 +38,14 @@ bool OverlayWindow::Create(int width, int height, int opacity) {
 
     RegisterClassExW(&wc);
 
-    DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    // Matches the original's CreateWindowExA exStyle = 0x8080088:
+    //   WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE
+    // WS_EX_NOACTIVATE: overlay never becomes foreground (dual-focus invariant).
+    // WS_EX_LAYERED from creation: forces DWM to composite all child content
+    // (including WebView2) as one layered surface, so SetWindowDisplayAffinity
+    // covers everything. Without this at creation time, WebView2's
+    // DirectComposition surface bypasses the parent's WDA.
+    DWORD exStyle = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_NOACTIVATE;
     DWORD style = WS_POPUP | WS_CLIPCHILDREN;
 
     RECT workArea{};
@@ -53,13 +61,16 @@ bool OverlayWindow::Create(int width, int height, int opacity) {
 
     if (!hwnd_) return false;
 
+    // Window is WS_EX_LAYERED from creation — always set alpha, even at 100%.
     currentOpacity_ = opacity;
-    if (opacity < 100) {
-        LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
-        SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, ex | WS_EX_LAYERED);
-        BYTE alpha = static_cast<BYTE>(opacity * 255 / 100);
-        SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
-    }
+    BYTE alpha = (opacity < 100)
+        ? static_cast<BYTE>(opacity * 255 / 100)
+        : 255;
+    SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
+
+    // Matches original: SetWindowDisplayAffinity → ShowWindow (capture protection
+    // applied before the window is ever shown).
+    ApplyCaptureProtection();
 
     winEventHook_ = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_REORDER,
@@ -77,6 +88,7 @@ bool OverlayWindow::Create(int width, int height, int opacity) {
 
 void OverlayWindow::Show(int nCmdShow) {
     ShowWindow(hwnd_, nCmdShow);
+    ApplyCaptureProtection();  // re-assert capture exclusion on every show
     ReassertTopmost();
 }
 
@@ -107,20 +119,12 @@ void OverlayWindow::Destroy() {
 
 void OverlayWindow::SetOpacity(int percent) {
     currentOpacity_ = std::clamp(percent, 0, 100);
-    LONG_PTR ex = GetWindowLongPtrW(hwnd_, GWL_EXSTYLE);
-    if (currentOpacity_ < 100) {
-        if (!(ex & WS_EX_LAYERED)) {
-            SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, (ex | WS_EX_LAYERED) | WS_EX_NOACTIVATE);
-        }
-        BYTE alpha = static_cast<BYTE>(currentOpacity_ * 255 / 100);
-        SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
-    } else {
-        if (ex & WS_EX_LAYERED) {
-            SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, (ex & ~WS_EX_LAYERED) | WS_EX_NOACTIVATE);
-            RedrawWindow(hwnd_, nullptr, nullptr,
-                RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
-        }
-    }
+    // WS_EX_LAYERED is permanent (required for WDA_EXCLUDEFROMCAPTURE to cover
+    // WebView2 child surfaces). Just update the alpha value.
+    BYTE alpha = (currentOpacity_ < 100)
+        ? static_cast<BYTE>(currentOpacity_ * 255 / 100)
+        : 255;
+    SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
 }
 
 void OverlayWindow::SetClickThrough(bool enable) {
@@ -131,7 +135,8 @@ void OverlayWindow::SetClickThrough(bool enable) {
     } else {
         exStyle &= ~WS_EX_TRANSPARENT;
     }
-    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, exStyle | WS_EX_NOACTIVATE);
+    // WS_EX_LAYERED is permanent; WS_EX_NOACTIVATE must always be re-asserted.
+    SetWindowLongPtrW(hwnd_, GWL_EXSTYLE, exStyle | WS_EX_LAYERED | WS_EX_NOACTIVATE);
 }
 
 void OverlayWindow::MoveTo(int x, int y) {
@@ -172,48 +177,110 @@ void OverlayWindow::EnableMouseReveal(bool enable) {
 
 void OverlayWindow::PaintToolbar(HDC hdc, const RECT& clientRect) {
     RECT toolbarRect = {0, 0, clientRect.right, kToolbarHeight};
-
     HBRUSH bgBrush = CreateSolidBrush(RGB(30, 30, 30));
     FillRect(hdc, &toolbarRect, bgBrush);
     DeleteObject(bgBrush);
 
+    // Divider lines under each row.
     HPEN borderPen = CreatePen(PS_SOLID, 1, RGB(60, 60, 60));
     HPEN oldPen = static_cast<HPEN>(SelectObject(hdc, borderPen));
-    MoveToEx(hdc, 0, kToolbarHeight - 1, nullptr);
-    LineTo(hdc, clientRect.right, kToolbarHeight - 1);
+    MoveToEx(hdc, 0, kTabRowHeight - 1, nullptr);   LineTo(hdc, clientRect.right, kTabRowHeight - 1);
+    MoveToEx(hdc, 0, kToolbarHeight - 1, nullptr);  LineTo(hdc, clientRect.right, kToolbarHeight - 1);
     SelectObject(hdc, oldPen);
     DeleteObject(borderPen);
 
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, RGB(180, 180, 180));
-
     HFONT hFont = CreateFontW(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Symbol");
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
     HFONT oldFont = static_cast<HFONT>(SelectObject(hdc, hFont));
 
-    const wchar_t* leftLabels[] = {L"\x2630", L"\x26B2", L"\x2699"};
-    int x = 6;
-    for (int i = 0; i < 3; i++) {
-        RECT btnRect = {x, 2, x + 28, kToolbarHeight - 4};
-        DrawTextW(hdc, leftLabels[i], -1, &btnRect,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
-        x += 28;
+    // --- Row 1: drag grip + tabs + minimize/close ---
+    RECT grip = GripRect(clientRect);
+    SetTextColor(hdc, RGB(120, 120, 120));
+    DrawTextW(hdc, L"\x283F", -1, &grip,  // braille-dots grip glyph
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+
+    int active = controller_.HasWebView()
+        ? controller_.GetWebView().GetCurrentSiteIndex() : -1;
+    int n = TabCount();
+    for (int i = 0; i < n; ++i) {
+        RECT r = TabRect(i, clientRect);
+        if (i == active) {
+            HBRUSH hl = CreateSolidBrush(RGB(52, 52, 58));
+            FillRect(hdc, &r, hl);
+            DeleteObject(hl);
+            HPEN accent = CreatePen(PS_SOLID, 2, RGB(90, 150, 245));
+            HPEN op = static_cast<HPEN>(SelectObject(hdc, accent));
+            MoveToEx(hdc, r.left + 3, kTabRowHeight - 3, nullptr);
+            LineTo(hdc, r.right - 3, kTabRowHeight - 3);
+            SelectObject(hdc, op);
+            DeleteObject(accent);
+            SetTextColor(hdc, RGB(235, 235, 235));
+        } else {
+            SetTextColor(hdc, RGB(150, 150, 150));
+        }
+        std::wstring label = controller_.HasWebView()
+            ? controller_.GetWebView().GetSiteLabel(i) : L"";
+        DrawTextW(hdc, label.c_str(), -1, &r,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
 
-    const wchar_t* rightLabels[] = {L"\x2015", L"\x25A1", L"\x2715"};
+    const wchar_t* rightLabels[] = {L"\x2015", L"\x2715"};  // minimize, close
     int rightX = clientRect.right - 6;
-    for (int i = 2; i >= 0; i--) {
-        RECT btnRect = {rightX - 24, 2, rightX, kToolbarHeight - 4};
-        if (i == 2) SetTextColor(hdc, RGB(220, 80, 80));
-        else SetTextColor(hdc, RGB(180, 180, 180));
+    for (int i = 1; i >= 0; i--) {
+        RECT btnRect = {rightX - 24, 2, rightX, kTabRowHeight - 4};
+        SetTextColor(hdc, i == 1 ? RGB(220, 80, 80) : RGB(180, 180, 180));
         DrawTextW(hdc, rightLabels[i], -1, &btnRect,
             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
         rightX -= 28;
     }
 
+    // --- Row 2: browser nav bar ---
+    PaintNavBar(hdc, clientRect);
+
     SelectObject(hdc, oldFont);
     DeleteObject(hFont);
+}
+
+void OverlayWindow::PaintNavBar(HDC hdc, const RECT& clientRect) {
+    // Back / Forward / Refresh icons.
+    struct { RECT r; const wchar_t* glyph; } btns[] = {
+        { BackRect(clientRect),    L"\x2039" },  // ‹
+        { FwdRect(clientRect),     L"\x203A" },  // ›
+        { RefreshRect(clientRect), L"\x21BB" },  // ⟳
+    };
+    SetTextColor(hdc, RGB(200, 200, 200));
+    for (auto& b : btns) {
+        DrawTextW(hdc, b.glyph, -1, &b.r,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOCLIP);
+    }
+
+    // Omnibox box.
+    RECT omni = OmniRect(clientRect);
+    HBRUSH field = CreateSolidBrush(s_urlEditing_ ? RGB(48, 48, 54) : RGB(40, 40, 44));
+    FillRect(hdc, &omni, field);
+    DeleteObject(field);
+    HPEN edge = CreatePen(PS_SOLID, 1, s_urlEditing_ ? RGB(90, 150, 245) : RGB(70, 70, 76));
+    HPEN op = static_cast<HPEN>(SelectObject(hdc, edge));
+    HBRUSH nb = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+    HBRUSH ob = static_cast<HBRUSH>(SelectObject(hdc, nb));
+    Rectangle(hdc, omni.left, omni.top, omni.right, omni.bottom);
+    SelectObject(hdc, op); SelectObject(hdc, ob);
+    DeleteObject(edge);
+
+    std::wstring shown = s_urlEditing_
+        ? urlText_
+        : (controller_.HasWebView() ? controller_.GetWebView().GetCurrentUrl() : L"");
+    bool placeholder = shown.empty();
+    if (placeholder && !s_urlEditing_) shown = L"Search Google or type a URL";
+    if (s_urlEditing_ && caretOn_) shown += L"\x2502";  // caret bar
+
+    RECT textR = omni;
+    textR.left += 8; textR.right -= 6;
+    SetTextColor(hdc, placeholder && !s_urlEditing_ ? RGB(120, 120, 120) : RGB(230, 230, 230));
+    DrawTextW(hdc, shown.c_str(), -1, &textR,
+        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 }
 
 LRESULT CALLBACK OverlayWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -237,16 +304,24 @@ LRESULT CALLBACK OverlayWindow::WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_MOUSEACTIVATE:
+            // Never activate on click: the underlying app keeps foreground/focus.
             return MA_NOACTIVATE;
 
         case WM_ACTIVATE:
         case WM_SETFOCUS:
+            // Backstop: if we somehow receive focus, release it immediately so
+            // the real app keeps the caret. WebView input comes via CDP, not focus.
+            if (controller_.HasWebView()) {
+                controller_.GetWebView().NotifyPositionChanged();
+            }
+            SetFocus(nullptr);
+            return 0;
+
         case WM_SHOWWINDOW:
         case WM_DISPLAYCHANGE:
             if (controller_.HasWebView()) {
                 controller_.GetWebView().NotifyPositionChanged();
             }
-            SetFocus(nullptr);
             return DefWindowProcW(hwnd_, msg, wParam, lParam);
 
         case WM_APP_FORWARD_KEY: {
@@ -255,6 +330,22 @@ LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             DWORD flags    = static_cast<DWORD>((lParam >> 8) & 0xFF);
             bool  keyDown  = ((lParam >> 16) & 0x1) != 0;
             ForwardKeyToWebView(vkCode, scanCode, flags, keyDown);
+            return 0;
+        }
+
+        case WM_APP_URL_KEY: {
+            DWORD vkCode   = static_cast<DWORD>(wParam);
+            DWORD scanCode = static_cast<DWORD>(lParam & 0xFF);
+            OnUrlKey(vkCode, scanCode);
+            return 0;
+        }
+
+        case WM_APP_CLIP_CMD: {
+            // Ctrl+C/V/X/A forwarded from the keyboard hook; run the clipboard op
+            // inside the WebView (matches the original's execCommand approach).
+            if (controller_.HasWebView()) {
+                controller_.GetWebView().ClipboardCommand(static_cast<wchar_t>(wParam));
+            }
             return 0;
         }
 
@@ -302,11 +393,13 @@ LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             GetClientRect(hwnd_, &rc);
 
             if (!clickThrough_ && pt.y < kToolbarHeight) {
-                int rightBtnX = rc.right - 6 - 28 * 3;
-                if (pt.x > rightBtnX && pt.x < rc.right - 6) {
-                    return HTCLIENT;
+                if (pt.y < kTabRowHeight) {
+                    int rightBtnLeft = rc.right - 6 - 28 * 2;
+                    if (pt.x >= rightBtnLeft && pt.x < rc.right - 6) return HTCLIENT; // min/close
+                    if (TabHitTest(pt, rc) >= 0) return HTCLIENT;                     // tabs
+                    return HTCAPTION;  // grip / empty row-1 area → drag the window
                 }
-                return HTCAPTION;
+                return HTCLIENT;  // row 2 (nav bar) is all interactive
             }
             return HTCLIENT;
         }
@@ -316,17 +409,31 @@ LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             RECT rc{};
             GetClientRect(hwnd_, &rc);
 
-            if (pt.y < kToolbarHeight) {
-                int rightBtnX = rc.right - 6 - 28 * 3;
-                if (pt.x > rightBtnX && pt.x < rc.right - 6) {
-                    int btnIdx = (rc.right - 6 - pt.x) / 28;
+            if (pt.y < kTabRowHeight) {
+                // Row 1: minimize / close / tabs
+                int rightBtnLeft = rc.right - 6 - 28 * 2;
+                if (pt.x >= rightBtnLeft && pt.x < rc.right - 6) {
+                    int btnIdx = (rc.right - 6 - pt.x) / 28;  // 0=close, 1=minimize
                     if (btnIdx == 0) {
                         PostMessageW(hwnd_, WM_CLOSE, 0, 0);
-                    } else if (btnIdx == 2) {
+                    } else if (btnIdx == 1) {
                         ShowWindow(hwnd_, SW_MINIMIZE);
                     }
                     return 0;
                 }
+                int tab = TabHitTest(pt, rc);
+                if (tab >= 0 && controller_.HasWebView()) {
+                    controller_.GetWebView().SwitchToSite(tab);
+                    InvalidateRect(hwnd_, nullptr, FALSE);
+                    return 0;
+                }
+            } else if (pt.y < kToolbarHeight) {
+                // Row 2: back / forward / refresh / omnibox
+                RECT rb = BackRect(rc), rf = FwdRect(rc), rr = RefreshRect(rc), ro = OmniRect(rc);
+                if (PtInRect(&rb, pt)) { if (controller_.HasWebView()) controller_.GetWebView().GoBack();    return 0; }
+                if (PtInRect(&rf, pt)) { if (controller_.HasWebView()) controller_.GetWebView().GoForward(); return 0; }
+                if (PtInRect(&rr, pt)) { if (controller_.HasWebView()) controller_.GetWebView().Reload();    return 0; }
+                if (PtInRect(&ro, pt)) { BeginUrlEdit(); return 0; }
             }
             break;
         }
@@ -357,6 +464,23 @@ void OverlayWindow::OnHotkey(WPARAM hotkeyId) {
 
 void OverlayWindow::OnMouseMove(int, int) {}
 
+void OverlayWindow::ApplyCaptureProtection() {
+    if (!hwnd_) return;
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+    SetWindowDisplayAffinity(hwnd_, WDA_EXCLUDEFROMCAPTURE);
+}
+
+void OverlayWindow::SuspendCaptureProtection() {
+    if (!hwnd_) return;
+    SetWindowDisplayAffinity(hwnd_, 0);
+}
+
+void OverlayWindow::RestoreCaptureProtection() {
+    ApplyCaptureProtection();
+}
+
 void OverlayWindow::ReassertTopmost() {
     if (!hwnd_ || !IsWindow(hwnd_)) return;
     if (!IsWindowVisible(hwnd_)) return;
@@ -377,6 +501,15 @@ void CALLBACK OverlayWindow::WinEventProc(
 void OverlayWindow::OnTimer(UINT_PTR timerId) {
     if (timerId == kTopmostTimer) {
         ReassertTopmost();
+        return;
+    }
+    if (timerId == kCaretTimer) {
+        if (s_urlEditing_) {
+            caretOn_ = !caretOn_;
+            RECT rc{}; GetClientRect(hwnd_, &rc);
+            RECT nav = {0, kTabRowHeight, rc.right, kToolbarHeight};
+            InvalidateRect(hwnd_, &nav, FALSE);
+        }
         return;
     }
     if (timerId == kMouseRevealTimer && mouseReveal_) {
@@ -401,6 +534,55 @@ void OverlayWindow::OnTimer(UINT_PTR timerId) {
     }
 }
 
+int OverlayWindow::TabCount() const {
+    if (!controller_.HasWebView()) return 0;
+    return static_cast<int>(controller_.GetWebView().GetSites().size());
+}
+
+RECT OverlayWindow::TabRect(int index, const RECT& clientRect) const {
+    // Row 1: after the drag grip on the left, before minimize+close on the right.
+    const int rightReserve = 6 + 28 * 2;
+    int areaLeft = 30;  // leave room for the grip
+    int areaRight = clientRect.right - rightReserve;
+    int n = TabCount();
+    if (n <= 0 || areaRight <= areaLeft) return RECT{0, 0, 0, 0};
+    int w = (areaRight - areaLeft) / n;
+    RECT r = { areaLeft + index * w, 2,
+               areaLeft + (index + 1) * w, kTabRowHeight - 2 };
+    return r;
+}
+
+RECT OverlayWindow::GripRect(const RECT&) const {
+    return RECT{ 4, 2, 26, kTabRowHeight - 2 };
+}
+
+RECT OverlayWindow::BackRect(const RECT&) const {
+    return RECT{ 4, kTabRowHeight + 3, 32, kToolbarHeight - 3 };
+}
+
+RECT OverlayWindow::FwdRect(const RECT&) const {
+    return RECT{ 34, kTabRowHeight + 3, 62, kToolbarHeight - 3 };
+}
+
+RECT OverlayWindow::RefreshRect(const RECT&) const {
+    return RECT{ 64, kTabRowHeight + 3, 92, kToolbarHeight - 3 };
+}
+
+RECT OverlayWindow::OmniRect(const RECT& clientRect) const {
+    return RECT{ 98, kTabRowHeight + 4, clientRect.right - 8, kToolbarHeight - 4 };
+}
+
+int OverlayWindow::TabHitTest(POINT pt, const RECT& clientRect) const {
+    for (int i = 0; i < TabCount(); ++i) {
+        RECT r = TabRect(i, clientRect);
+        if (PtInRect(&r, pt)) return i;
+    }
+    return -1;
+}
+
+// "Last click decides" — a click inside the WebView body makes the keyboard
+// hook route keystrokes to the WebView; a click anywhere else lets them flow to
+// whatever app the user is in. This hook never eats mouse events.
 LRESULT CALLBACK OverlayWindow::LowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION && s_instance_ && s_instance_->hwnd_ &&
         (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN)) {
@@ -408,34 +590,165 @@ LRESULT CALLBACK OverlayWindow::LowLevelMouseProc(int nCode, WPARAM wParam, LPAR
         auto* ms = reinterpret_cast<MSLLHOOKSTRUCT*>(lParam);
         RECT rc{};
         GetWindowRect(s_instance_->hwnd_, &rc);
+        bool visible = IsWindowVisible(s_instance_->hwnd_);
 
-        bool inWebView = IsWindowVisible(s_instance_->hwnd_) &&
+        bool inWebView = visible &&
                          ms->pt.x >= rc.left && ms->pt.x <= rc.right &&
                          ms->pt.y >= rc.top + kToolbarHeight && ms->pt.y <= rc.bottom;
-
         s_keyTargetWebView_ = inWebView;
+
+        // Cancel omnibox editing unless the click is on the omnibox itself.
+        if (s_urlEditing_) {
+            RECT client{}; GetClientRect(s_instance_->hwnd_, &client);
+            RECT omni = s_instance_->OmniRect(client);
+            POINT sp = { omni.left, omni.top }; ClientToScreen(s_instance_->hwnd_, &sp);
+            POINT ep = { omni.right, omni.bottom }; ClientToScreen(s_instance_->hwnd_, &ep);
+            bool onOmni = visible && ms->pt.x >= sp.x && ms->pt.x <= ep.x &&
+                          ms->pt.y >= sp.y && ms->pt.y <= ep.y;
+            if (!onOmni) {
+                s_urlEditing_ = false;
+                InvalidateRect(s_instance_->hwnd_, nullptr, FALSE);
+            }
+        }
     }
     return CallNextHookEx(s_mouseHook_, nCode, wParam, lParam);
 }
 
+static bool IsModifierVk(DWORD vk) {
+    switch (vk) {
+        case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT:
+        case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+        case VK_MENU: case VK_LMENU: case VK_RMENU:
+        case VK_LWIN: case VK_RWIN:
+        case VK_CAPITAL:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Routes keystrokes to the WebView (via CDP) when the last click was inside it,
+// WITHOUT stealing Win32 focus from the user's real app.
+//
+// Two fixes over the earlier broken version:
+//  1. Modifier keys (Shift/Ctrl/Alt/Win/CapsLock) are NEVER eaten — they pass
+//     through so the OS keyboard state stays correct (ToUnicode then produces
+//     capitals and shifted symbols) and so global hotkeys can still see them.
+//  2. Any chord that holds Ctrl/Alt/Win passes through untouched, so registered
+//     global hotkeys (Ctrl+Shift+H/D/A/...) fire instead of being swallowed.
 LRESULT CALLBACK OverlayWindow::LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    if (nCode == HC_ACTION && s_keyTargetWebView_ && s_instance_ &&
+    if (nCode == HC_ACTION && s_instance_ &&
         s_instance_->hwnd_ && IsWindowVisible(s_instance_->hwnd_)) {
 
         auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
         bool keyDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
         bool keyUp   = (wParam == WM_KEYUP   || wParam == WM_SYSKEYUP);
 
-        if (keyDown || keyUp) {
+        bool ctrlAltWin =
+            (GetAsyncKeyState(VK_CONTROL) & 0x8000) ||
+            (GetAsyncKeyState(VK_MENU)    & 0x8000) ||
+            (GetAsyncKeyState(VK_LWIN)    & 0x8000) ||
+            (GetAsyncKeyState(VK_RWIN)    & 0x8000);
+
+        bool capturable = (keyDown || keyUp) && !IsModifierVk(kb->vkCode) && !ctrlAltWin;
+
+        // Ctrl+C / Ctrl+V / Ctrl+X / Ctrl+A routed INTO the WebView when it is the
+        // active target. WebViewManager::ClipboardCommand reads/inserts the
+        // selection via JS and moves the data through the OS clipboard with the
+        // Win32 API (in-page execCommand/navigator.clipboard are rejected by
+        // Chromium because the overlay's document never has focus).
+        // Only a PLAIN Ctrl chord is eaten (never Ctrl+Shift/Alt/Win), so global
+        // hotkeys (Ctrl+Shift+H/D/A, tab switch, zoom, …) still fire. When the
+        // WebView is NOT the target the chord falls through untouched, so the
+        // underlying desktop app's own Ctrl+C/V keeps working normally. The
+        // shared OS clipboard makes copy/paste work across the two directions.
+        {
+            bool ctrlDown  = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool shiftDown = (GetAsyncKeyState(VK_SHIFT)   & 0x8000) != 0;
+            bool altDown   = (GetAsyncKeyState(VK_MENU)    & 0x8000) != 0;
+            bool winDown   = ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
+            bool ctrlOnly  = ctrlDown && !shiftDown && !altDown && !winDown;
+            bool isClipVk  = (kb->vkCode == 'C' || kb->vkCode == 'V' ||
+                              kb->vkCode == 'X' || kb->vkCode == 'A');
+            if (s_keyTargetWebView_ && !s_urlEditing_ && ctrlOnly && isClipVk &&
+                (keyDown || keyUp)) {
+                if (keyDown) {
+                    PostMessageW(s_instance_->hwnd_, WM_APP_CLIP_CMD,
+                                 static_cast<WPARAM>(kb->vkCode), 0);
+                }
+                return 1;  // eat down AND up — the WebView handles it, not the app
+            }
+        }
+
+        // Omnibox editing takes priority and routes keys to the URL field.
+        if (s_urlEditing_ && capturable) {
+            if (keyDown) {
+                LPARAM packed = (kb->scanCode & 0xFF) | ((kb->flags & 0xFF) << 8);
+                PostMessageW(s_instance_->hwnd_, WM_APP_URL_KEY,
+                             static_cast<WPARAM>(kb->vkCode), packed);
+            }
+            return 1;  // eat (both down and up) so it never reaches other apps
+        }
+
+        // Otherwise, route to the WebView when the last click was inside it.
+        if (s_keyTargetWebView_ && !s_urlEditing_ && capturable) {
             LPARAM packed = (kb->scanCode & 0xFF)
                           | ((kb->flags & 0xFF) << 8)
                           | ((keyDown ? 1 : 0) << 16);
             PostMessageW(s_instance_->hwnd_, WM_APP_FORWARD_KEY,
                          static_cast<WPARAM>(kb->vkCode), packed);
-            return 1;
+            return 1;  // eat: it goes to the WebView instead of the focused app
         }
+        // Modifiers and Ctrl/Alt/Win chords fall through to the system.
     }
     return CallNextHookEx(s_keyboardHook_, nCode, wParam, lParam);
+}
+
+void OverlayWindow::BeginUrlEdit() {
+    s_urlEditing_ = true;
+    urlText_ = controller_.HasWebView() ? controller_.GetWebView().GetCurrentUrl() : L"";
+    urlSelectAll_ = true;   // first keystroke replaces the whole field (browser-like)
+    caretOn_ = true;
+    SetTimer(hwnd_, kCaretTimer, 500, nullptr);
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void OverlayWindow::EndUrlEdit(bool commit) {
+    if (!s_urlEditing_) return;
+    s_urlEditing_ = false;
+    KillTimer(hwnd_, kCaretTimer);
+    if (commit && controller_.HasWebView() && !urlText_.empty()) {
+        controller_.GetWebView().NavigateOmnibox(urlText_);
+    }
+    urlText_.clear();
+    urlSelectAll_ = false;
+    InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void OverlayWindow::OnUrlKey(DWORD vkCode, DWORD scanCode) {
+    if (!s_urlEditing_) return;
+    if (vkCode == VK_RETURN) { EndUrlEdit(true);  return; }
+    if (vkCode == VK_ESCAPE) { EndUrlEdit(false); return; }
+
+    if (vkCode == VK_BACK) {
+        if (urlSelectAll_) { urlText_.clear(); urlSelectAll_ = false; }
+        else if (!urlText_.empty()) urlText_.pop_back();
+    } else {
+        BYTE ks[256]{};
+        GetKeyboardState(ks);
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000)   ks[VK_SHIFT]    = 0x80;
+        if (GetAsyncKeyState(VK_CAPITAL) & 1)      ks[VK_CAPITAL] |= 1;
+        WCHAR ch[8]{};
+        int nn = ToUnicode(vkCode, scanCode, ks, ch, 8, 0);
+        if (nn > 0 && ch[0] >= 0x20 && ch[0] != 0x7F) {
+            if (urlSelectAll_) { urlText_.clear(); urlSelectAll_ = false; }
+            urlText_.append(ch, ch + nn);
+        }
+    }
+    caretOn_ = true;
+    RECT rc{}; GetClientRect(hwnd_, &rc);
+    RECT nav = {0, kTabRowHeight, rc.right, kToolbarHeight};
+    InvalidateRect(hwnd_, &nav, FALSE);
 }
 
 void OverlayWindow::ForwardKeyToWebView(DWORD vkCode, DWORD scanCode, DWORD flags, bool keyDown) {
@@ -451,21 +764,20 @@ void OverlayWindow::ForwardKeyToWebView(DWORD vkCode, DWORD scanCode, DWORD flag
 
     bool ctrlOrAlt = (modifiers & (1 | 2)) != 0;
 
-    // Translate to a printable character (respecting shift/caps) for insertText.
+    // Translate to a printable character, respecting the (now correct) Shift/Caps
+    // state, for Input.insertText.
     BYTE ks[256]{};
     GetKeyboardState(ks);
-    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)   ks[VK_SHIFT]   = 0x80;
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000)   ks[VK_SHIFT]    = 0x80;
     if (GetAsyncKeyState(VK_CAPITAL) & 1)      ks[VK_CAPITAL] |= 1;
     WCHAR chars[8]{};
     int n = ToUnicode(vkCode, scanCode, ks, chars, 8, 0);
 
     if (keyDown && n > 0 && !ctrlOrAlt && chars[0] >= 0x20 && chars[0] != 0x7F) {
-        // Printable text: insert directly into the focused element.
         wv.InjectText(std::wstring(chars, chars + n));
         return;
     }
 
-    // Non-printable / control keys: dispatch a key event.
     std::wstring key, code;
     switch (vkCode) {
         case VK_RETURN:  key = L"Enter";      code = L"Enter";       break;

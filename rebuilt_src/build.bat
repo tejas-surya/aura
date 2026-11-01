@@ -40,6 +40,17 @@ if not exist "packages\nlohmann_json" (
     )
 )
 
+:: Kill any running instance AND its WebView2 child processes so the new
+:: build uses fresh code (WebView2 reuses browser processes from the same
+:: user-data folder, so stale processes mean new code never takes effect).
+echo.
+echo [BUILD] Stopping previous instance and its WebView2 processes...
+taskkill /F /IM MYOWNAPP_rebuilt.exe >nul 2>&1
+:: Kill WebView2 processes that belong to our profile (command line contains "UFOlee").
+:: Uses PowerShell because wmic is deprecated and unreliable on Win11.
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'UFOlee' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+timeout /t 2 /nobreak >nul 2>&1
+
 :: Build main application with CMake
 echo.
 echo [BUILD] Configuring CMake...
@@ -73,7 +84,19 @@ echo   Output: build\Release\MYOWNAPP_rebuilt.exe
 echo           build\hook_dll\Release\app_hook.dll
 echo ============================================================
 echo.
+:: Final kill before deploy - processes may have respawned during the build.
+taskkill /F /IM MYOWNAPP_rebuilt.exe >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'UFOlee' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 copy /y "build\Release\MYOWNAPP_rebuilt.exe" "..\MYOWNAPP_rebuilt.exe" >nul
-if exist "build\hook_dll\Release\app_hook.dll" copy /y "build\hook_dll\Release\app_hook.dll" "..\app_hook_rebuilt.dll" >nul
+if exist "build\hook_dll\Release\app_hook.dll" copy /y "build\hook_dll\Release\app_hook.dll" "..\app_hook.dll" >nul
 if exist "..\WebView2Loader.dll" copy /y "..\WebView2Loader.dll" "build\Release\WebView2Loader.dll" >nul
 echo Binaries deployed to workspace root and build directory.
+
+:: Keep a timestamped copy of every build under ..\exports\
+if not exist "..\exports" mkdir "..\exports"
+for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%t"
+copy /y "build\Release\MYOWNAPP_rebuilt.exe" "..\exports\MYOWNAPP_rebuilt_%STAMP%.exe" >nul
+:: The exe needs its runtime DLLs sitting next to it to launch from exports\.
+if exist "..\WebView2Loader.dll" copy /y "..\WebView2Loader.dll" "..\exports\WebView2Loader.dll" >nul
+if exist "build\hook_dll\Release\app_hook.dll" copy /y "build\hook_dll\Release\app_hook.dll" "..\exports\app_hook.dll" >nul
+echo Versioned copy saved: exports\MYOWNAPP_rebuilt_%STAMP%.exe (with WebView2Loader.dll + app_hook.dll)

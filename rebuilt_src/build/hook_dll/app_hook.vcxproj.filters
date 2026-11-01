@@ -4,9 +4,6 @@
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\hook_dll\HookMain.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\hook_dll\MinHook\MinHook.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\hook_dll\CMakeLists.txt" />

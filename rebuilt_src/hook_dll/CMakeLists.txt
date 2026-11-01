@@ -4,16 +4,15 @@ enable_language(C)
 
 add_library(app_hook SHARED
     HookMain.cpp
-    MinHook/MinHook.c
 )
 
 target_include_directories(app_hook PRIVATE
-    MinHook
     ${CMAKE_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/hook_dll
 )
 
 target_link_libraries(app_hook PRIVATE
-    user32 gdi32 kernel32 advapi32
+    user32 kernel32
 )
 
 target_compile_definitions(app_hook PRIVATE

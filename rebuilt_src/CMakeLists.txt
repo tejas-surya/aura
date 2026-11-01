@@ -44,6 +44,7 @@ add_executable(MYOWNAPP_rebuilt WIN32
 
 target_include_directories(MYOWNAPP_rebuilt PRIVATE
     src
+    hook_dll
     ${WEBVIEW2_INCLUDE_DIR}
     ${NLOHMANN_JSON_INCLUDE_DIR}
 )

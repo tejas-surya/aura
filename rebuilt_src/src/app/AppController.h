@@ -2,6 +2,9 @@
 #include <Windows.h>
 #include <memory>
 #include <string>
+#include <set>
+
+struct SharedHookData;
 
 class ConfigManager;
 class StateManager;
@@ -40,20 +43,29 @@ public:
     void MoveWindow(int dx, int dy);
     void ScrollPage(int direction);
     void AdjustTypingSpeed(int delta);
+    void AdjustZoom(double delta);
     void RotateWebsite();
     void CaptureAndSend();
     void ExtractUIText();
     void ExtractAndSendAI();
     void TypeLastAnswer();
+    void AutoTypeSelection();
     void ToggleVoiceCopilot();
 
 private:
-    bool LoadHookDll();
-    void UnloadHookDll();
-    void UpdateSharedMemory();
+    bool InitHookSystem();
+    void CleanupHookSystem();
+    bool InjectIntoPid(DWORD pid);
+    bool ShouldSkipProcess(DWORD pid);
 
     HINSTANCE hInstance_;
-    HMODULE hookDll_ = nullptr;
+
+    // Hook injection system (matches original's app_hook.dll mechanism)
+    HANDLE hSharedMem_ = nullptr;
+    SharedHookData* pShared_ = nullptr;
+    HANDLE hScrubEvent_ = nullptr;
+    std::set<DWORD> injectedPids_;
+    std::wstring hookDllPath_;
 
     std::unique_ptr<ConfigManager> config_;
     std::unique_ptr<StateManager> state_;
@@ -72,4 +84,9 @@ private:
     bool clickThrough_ = false;
     int currentOpacity_ = 100;
     std::wstring lastAiAnswer_;
+
+    // Screenshot debounce state (mirrors the original CaptureAndInjectScreenshot).
+    unsigned long long lastShotTick_ = 0;   // GetTickCount64() of the last capture
+    bool shotInProgress_ = false;           // guard against re-entrant requests
+    static constexpr unsigned long long kShotDebounceMs = 1500; // 0x5dc in the original
 };

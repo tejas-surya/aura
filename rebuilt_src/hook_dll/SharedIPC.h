@@ -43,6 +43,7 @@ static constexpr const wchar_t* kSelfProcessNames[] = {
     L"stealth_launcher.exe",
     L"comet.exe",
     L"MYOWNAPP.exe",
+    L"MYOWNAPP_rebuilt.exe",
 };
 
 static constexpr const wchar_t* kBrowserProcesses[] = {

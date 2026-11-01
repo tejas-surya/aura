@@ -59,12 +59,12 @@ void ConfigManager::CreateDefaults() {
             {{"id", 15}, {"modifiers", 6}, {"vk", 69},  {"action", "Extract UI text"}},
             {{"id", 16}, {"modifiers", 6}, {"vk", 13},  {"action", "Extract & send AI"}},
             {{"id", 14}, {"modifiers", 6}, {"vk", 86},  {"action", "Voice copilot"}},
-            {{"id", 5},  {"modifiers", 6}, {"vk", 70},  {"action", "Type last answer"}},
+            {{"id", 5},  {"modifiers", 6}, {"vk", 70},  {"action", "Auto-type highlighted"}},
             {{"id", 6},  {"modifiers", 6}, {"vk", 188}, {"action", "Opacity down"}},
             {{"id", 7},  {"modifiers", 6}, {"vk", 190}, {"action", "Opacity up"}},
             {{"id", 9},  {"modifiers", 6}, {"vk", 68},  {"action", "Click-through"}},
-            {{"id", 10}, {"modifiers", 6}, {"vk", 39},  {"action", "Move window right"}},
-            {{"id", 11}, {"modifiers", 6}, {"vk", 37},  {"action", "Move window left"}},
+            {{"id", 10}, {"modifiers", 6}, {"vk", 39},  {"action", "Next AI tab"}},
+            {{"id", 11}, {"modifiers", 6}, {"vk", 37},  {"action", "Previous AI tab"}},
             {{"id", 23}, {"modifiers", 6}, {"vk", 38},  {"action", "Move window up"}},
             {{"id", 24}, {"modifiers", 6}, {"vk", 40},  {"action", "Move window down"}},
             {{"id", 17}, {"modifiers", 2}, {"vk", 38},  {"action", "Scroll up"}},
@@ -74,7 +74,9 @@ void ConfigManager::CreateDefaults() {
             {{"id", 13}, {"modifiers", 6}, {"vk", 221}, {"action", "Typing speed +"}},
             {{"id", 19}, {"modifiers", 6}, {"vk", 84},  {"action", "Text-only mode"}},
             {{"id", 20}, {"modifiers", 6}, {"vk", 8},   {"action", "Panic hide"}},
-            {{"id", 25}, {"modifiers", 6}, {"vk", 77},  {"action", "Mouse-only mode"}}
+            {{"id", 25}, {"modifiers", 6}, {"vk", 77},  {"action", "Mouse-only mode"}},
+            {{"id", 26}, {"modifiers", 6}, {"vk", 187}, {"action", "Zoom in"}},
+            {{"id", 27}, {"modifiers", 6}, {"vk", 189}, {"action", "Zoom out"}}
         })}
     };
     ParseHotkeys();
