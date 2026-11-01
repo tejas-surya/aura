@@ -77,6 +77,8 @@ private:
     bool caretOn_ = true;         // blink state while editing
 
     void ReassertTopmost();
+    void InstallHooks();
+    void RemoveHooks();
     // Excludes the overlay from screen capture/recording via
     // SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE); matches the original.
     void ApplyCaptureProtection();
@@ -107,7 +109,7 @@ private:
     static constexpr UINT WM_APP_URL_KEY     = WM_APP + 0x102;
     static constexpr UINT WM_APP_CLIP_CMD    = WM_APP + 0x103;
 
-    static constexpr wchar_t kClassName[] = L"MYOWNAPP_OverlayClass";
+    static constexpr wchar_t kClassName[] = L"Shell_InputOverlayWnd";
     static constexpr UINT_PTR kMouseRevealTimer = 1001;
     static constexpr UINT_PTR kSlideTimer = 1002;
     static constexpr UINT_PTR kTopmostTimer = 1003;

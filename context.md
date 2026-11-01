@@ -215,7 +215,7 @@ windows that GDI BitBlt renders as empty desktop background.
 
 ---
 
-## 7. WDA Bypass — Capturing Protected Target Apps (app_hook.dll)
+## 7. WDA Bypass — Capturing Protected Target Apps (dxgi_assist.dll)
 
 When the target app itself has `SetWindowDisplayAffinity` protection, our
 DXGI capture sees black. The solution: inject a DLL into the target process
@@ -284,7 +284,7 @@ GetExitCodeThread(hThread, &exitCode);  // non-zero = success
 
 // 6. Wait for DLL's "ready" event
 HANDLE hReady = OpenEventW(SYNCHRONIZE, FALSE,
-    L"Local\\UFOlee_Hook_Active_<pid>");
+    L"Local\\WinRT_Comp_ModReady_<pid>");
 WaitForSingleObject(hReady, 3000);
 ```
 
@@ -330,9 +330,9 @@ struct SharedHookData {
 
 | Name | Type | Owner | Purpose |
 |------|------|-------|---------|
-| `Local\DWM_Composition_Data` | File mapping | Main exe creates, DLL opens | Shared memory for tracked windows and flags |
-| `Local\DWM_Composition_Notify` | Auto-reset event | Main exe signals | Tells DLL to clear WDA now |
-| `Local\UFOlee_Hook_Active_<PID>` | Manual-reset event | DLL signals | Tells main exe the DLL is ready |
+| `Local\WinRT_Comp_SharedData` | File mapping | Main exe creates, DLL opens | Shared memory for tracked windows and flags |
+| `Local\WinRT_Comp_FrameSync` | Auto-reset event | Main exe signals | Tells DLL to clear WDA now |
+| `Local\WinRT_Comp_ModReady_<PID>` | Manual-reset event | DLL signals | Tells main exe the DLL is ready |
 
 ### Manifest
 
@@ -372,9 +372,9 @@ focus-free JS.
 | `rebuilt_src/src/browser/WebViewManager.cpp/.h` | WebView2 init (occlusion fix), InjectText (JS), InjectKey (CDP), clipboard, screenshot paste |
 | `rebuilt_src/src/app/AppController.cpp/.h` | Orchestration, hook system init, CaptureAndSend, InjectIntoPid, hotkey dispatch |
 | `rebuilt_src/src/automation/ScreenCapture.cpp/.h` | DXGI Desktop Duplication + GDI fallback, PNG encoding |
-| `rebuilt_src/hook_dll/HookMain.cpp` | Injected DLL: shared memory, scrub event loop, direct SetWindowDisplayAffinity calls |
-| `rebuilt_src/hook_dll/SharedIPC.h` | SharedHookData struct, named object constants, process skip-lists |
-| `rebuilt_src/hook_dll/CMakeLists.txt` | DLL build config (user32 + kernel32 only, no MinHook) |
+| `rebuilt_src/hook_dll/HookMain.cpp` | Injected DLL (`dxgi_assist.dll`): shared memory, scrub event loop, direct SetWindowDisplayAffinity calls |
+| `rebuilt_src/hook_dll/SharedIPC.h` | SharedHookData struct, named object constants (WinRT_Comp_* prefix), process skip-lists |
+| `rebuilt_src/hook_dll/CMakeLists.txt` | DLL build config (output: `dxgi_assist.dll`, user32 + kernel32 only, no MinHook) |
 | `rebuilt_src/res/app.manifest` | `highestAvailable` elevation, DPI awareness, common controls |
 
 ---
@@ -386,9 +386,9 @@ cd rebuilt_src
 .\build.bat
 ```
 
-Builds both `MYOWNAPP_rebuilt.exe` and `app_hook.dll`, deploys to workspace
+Builds both `DesktopWidget.exe` and `dxgi_assist.dll`, deploys to workspace
 root, and saves a timestamped copy in `exports/`. The `exports/` directory
-also gets `WebView2Loader.dll` and `app_hook.dll` so each export is
+also gets `WebView2Loader.dll` and `dxgi_assist.dll` so each export is
 self-contained and runnable.
 
 Dependencies: Visual Studio / Build Tools (C++ workload), WebView2 NuGet
@@ -398,7 +398,9 @@ package, nlohmann/json.
 
 ## Diagnostic Logging
 
-All logging uses `OutputDebugStringA` (view with DebugView or VS Output window).
+All logging uses `DbgLog()` which wraps `OutputDebugStringA` — compiled out
+(`NDEBUG`) in Release builds. View with DebugView or VS Output window in
+Debug builds only.
 
 **Main exe prefixes:**
 
@@ -408,5 +410,53 @@ All logging uses `OutputDebugStringA` (view with DebugView or VS Output window).
 | `[CAPTURE]` | Foreground window, PID, WDA window count, capture result |
 | `[INJECT]` | OpenProcess/VirtualAllocEx/CreateRemoteThread/LoadLibraryW results with error codes |
 
-**Injected DLL prefix:** `[app_hook PID:<pid>]` — shared memory status, scrub
+**Injected DLL prefix:** `[dxgi PID:<pid>]` — shared memory status, scrub
 event handling, per-window WDA clear/restore results with error codes.
+
+---
+
+## 9. Anti-Detection Hardening
+
+Every user-facing name — process, window, kernel object, filesystem path,
+and string literal — uses generic system-sounding identifiers that blend
+with normal Windows components. A target app enumerating processes, windows,
+or named objects sees nothing identifiable.
+
+### Naming scheme
+
+| Surface | Old (fingerprintable) | New (generic) |
+|---------|----------------------|---------------|
+| **Exe** | `MYOWNAPP_rebuilt.exe` | `DesktopWidget.exe` |
+| **DLL** | `app_hook.dll` | `dxgi_assist.dll` |
+| **Window class** | `MYOWNAPP_OverlayClass` | `Shell_InputOverlayWnd` |
+| **Window title** | `MYOWNAPP` | *(empty string)* |
+| **Manifest identity** | `MYOWNAPP` | `DesktopWidget` |
+| **Single-instance mutex** | `Local\MYOWNAPP_SingleInstance_Mutex` | `Local\WinRT_Comp_SessionLock` |
+| **Shared memory** | `Local\DWM_Composition_Data` | `Local\WinRT_Comp_SharedData` |
+| **Scrub event** | `Local\DWM_Composition_Notify` | `Local\WinRT_Comp_FS_<session>` (per-session random suffix) |
+| **Hook active event** | `Local\UFOlee_Hook_Active_<PID>` | `Local\WinRT_Comp_ModReady_<PID>_<session>` |
+| **WebView2 data folder** | `%LOCALAPPDATA%\UFOlee\edge_profile_` | `%LOCALAPPDATA%\Microsoft\WebToolkit\Default` |
+| **Debug log file** | `debug_log.enc` | `cache.dat` |
+| **Crypto key seed** | `MYOWNAPP_v1` | `WinRT_Comp_v1` |
+| **JS global** | `window.__ufolee_shot` | `window.__wv_cap` |
+| **Self-process list** | `UFOlee.exe`, `MYOWNAPP.exe`, etc. (7 names) | `DesktopWidget.exe` (1 name) |
+| **DLL debug prefix** | `[app_hook PID:...]` | `[dxgi PID:...]` |
+
+### Mitigations applied (from futurecorrections.md)
+
+| Vector | Mitigation |
+|--------|-----------|
+| `OutputDebugStringA` messages | **FIXED:** `DbgLog()` compiles to no-op in Release (`#ifdef NDEBUG`) |
+| `SeDebugPrivilege` elevation | **MITIGATED:** JIT enable/disable — only enabled during `OpenProcess` if access denied, disabled immediately after |
+| `WH_KEYBOARD_LL` / `WH_MOUSE_LL` detectable | **MITIGATED:** Hooks installed lazily on `Show()`, removed on `Hide()` — minimizes detection window |
+| `CreateRemoteThread` injection | **MITIGATED:** Module-based duplicate check (`K32EnumProcessModulesEx`), session-0 filter, 32-bit process filter |
+| WDA suspend window (~2000ms) | **MITIGATED:** Reduced to ~60ms DLL side, ~30ms exe side |
+| Kernel object name fingerprinting | **MITIGATED:** Per-session random suffix in shared memory, used for all event names |
+
+### What this still does NOT fix (architectural)
+
+| Vector | Why it's hard |
+|--------|--------------|
+| `CreateRemoteThread` injection method itself | Most-detected; alternatives (manual map, APC) need kernel-level complexity |
+| Target self-polling WDA during scrub | Would need to hook `GetWindowDisplayAffinity` in target — needs x64 trampoline |
+| `SendInput` has `LLKHF_INJECTED` flag | Hardware-level; only kernel drivers can mask it (not needed — we type via CDP) |

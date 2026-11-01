@@ -26,7 +26,7 @@ WebViewManager::~WebViewManager() {
 std::wstring WebViewManager::GetUserDataFolder() const {
     wchar_t appData[MAX_PATH]{};
     SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appData);
-    fs::path dataDir = fs::path(appData) / L"UFOlee" / L"edge_profile_";
+    fs::path dataDir = fs::path(appData) / L"Microsoft" / L"WebToolkit" / L"Default";
     fs::create_directories(dataDir);
     return dataDir.wstring();
 }
@@ -740,8 +740,8 @@ void WebViewManager::SendScreenshot(const std::vector<uint8_t>& pngData) {
     // file-input fallback. Recovered from MYOWNAPP.exe CaptureAndInjectScreenshot.
     static const wchar_t* kPrefix = LR"JS(
             (function() {
-                window.__ufolee_shot = 1;
-                setTimeout(function(){ window.__ufolee_shot = 0; }, 4000);
+                window.__wv_cap = 1;
+                setTimeout(function(){ window.__wv_cap = 0; }, 4000);
 
                 var b64Data = ')JS";
 

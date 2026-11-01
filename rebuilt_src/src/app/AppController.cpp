@@ -14,7 +14,23 @@
 #include <filesystem>
 #include "SharedIPC.h"
 
+#include <Psapi.h>
+#pragma comment(lib, "psapi.lib")
+
 namespace fs = std::filesystem;
+
+#ifdef NDEBUG
+static inline void DbgLog(const char*, ...) {}
+#else
+static void DbgLog(const char* fmt, ...) {
+    char buf[512]{};
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    OutputDebugStringA(buf);
+}
+#endif
 
 AppController::AppController(HINSTANCE hInstance)
     : hInstance_(hInstance) {}
@@ -282,15 +298,12 @@ void AppController::CaptureAndSend() {
         EnumWindows(EnumWdaProc, reinterpret_cast<LPARAM>(&ctx));
         targetHasWda = (pShared_->trackedWindowCount > 0);
 
-        char dbg[256];
-        wsprintfA(dbg, "[CAPTURE] fg=%p pid=%lu wdaWindows=%lu hookDll=%d",
+        DbgLog("[CAPTURE] fg=%p pid=%lu wdaWindows=%lu hookDll=%d",
             fgWnd, targetPid, pShared_->trackedWindowCount, !hookDllPath_.empty());
-        OutputDebugStringA(dbg);
 
         if (targetHasWda) {
             bool injected = InjectIntoPid(targetPid);
-            wsprintfA(dbg, "[CAPTURE] InjectIntoPid(%lu) => %d", targetPid, injected);
-            OutputDebugStringA(dbg);
+            DbgLog("[CAPTURE] InjectIntoPid(%lu) => %d", targetPid, injected);
         }
     }
 
@@ -299,15 +312,14 @@ void AppController::CaptureAndSend() {
 
     if (targetHasWda && hScrubEvent_ && pShared_) {
         SetEvent(hScrubEvent_);
+        // Tight poll: 30×1ms = 30ms max for DLL to clear WDA.
         int polls = 0;
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 30; i++) {
             if (pShared_->wdaCleared) break;
-            Sleep(5);
+            Sleep(1);
             polls++;
         }
-        char dbg[128];
-        wsprintfA(dbg, "[CAPTURE] wdaCleared=%d after %d polls", pShared_->wdaCleared, polls);
-        OutputDebugStringA(dbg);
+        DbgLog("[CAPTURE] wdaCleared=%d after %d polls", pShared_->wdaCleared, polls);
     }
 
     auto bitmap = screenCap_->CaptureVirtualScreen();
@@ -318,10 +330,8 @@ void AppController::CaptureAndSend() {
 
     overlay_->RestoreCaptureProtection();
 
-    char dbg[128];
-    wsprintfA(dbg, "[CAPTURE] bitmap=%zu bytes, targetHadWda=%d",
+    DbgLog("[CAPTURE] bitmap=%zu bytes, targetHadWda=%d",
         bitmap.size(), targetHasWda);
-    OutputDebugStringA(dbg);
 
     if (!bitmap.empty()) {
         webView_->SendScreenshot(bitmap);
@@ -394,14 +404,14 @@ bool AppController::InitHookSystem() {
     wchar_t exePath[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
     fs::path exeDir = fs::path(exePath).parent_path();
-    hookDllPath_ = (exeDir / L"app_hook.dll").wstring();
+    hookDllPath_ = (exeDir / L"dxgi_assist.dll").wstring();
 
     if (!fs::exists(hookDllPath_)) {
-        OutputDebugStringA("[HOOK] app_hook.dll NOT FOUND next to exe — WDA bypass disabled");
+        DbgLog("[HOOK] dxgi_assist.dll NOT FOUND next to exe -- WDA bypass disabled");
         hookDllPath_.clear();
         return false;
     }
-    OutputDebugStringA("[HOOK] app_hook.dll found, initializing hook system");
+    DbgLog("[HOOK] dxgi_assist.dll found, initializing hook system");
 
     SECURITY_ATTRIBUTES sa{};
     sa.nLength = sizeof(sa);
@@ -414,9 +424,7 @@ bool AppController::InitHookSystem() {
     hSharedMem_ = CreateFileMappingW(INVALID_HANDLE_VALUE, &sa,
         PAGE_READWRITE, 0, sizeof(SharedHookData), kSharedMemName);
     if (!hSharedMem_) {
-        char dbg[128];
-        wsprintfA(dbg, "[HOOK] CreateFileMapping FAILED GLE=%lu", GetLastError());
-        OutputDebugStringA(dbg);
+        DbgLog("[HOOK] CreateFileMapping FAILED GLE=%lu", GetLastError());
         return false;
     }
 
@@ -432,12 +440,20 @@ bool AppController::InitHookSystem() {
     pShared_->ownerPid = GetCurrentProcessId();
     pShared_->overlayHwnd = overlay_->GetHwnd();
 
-    hScrubEvent_ = CreateEventW(&sa, FALSE, FALSE, kDwmCompositionNotify);
+    // Per-session random suffix for kernel object names (defeats static scanning).
+    {
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        DWORD seed = GetCurrentProcessId() ^ static_cast<DWORD>(counter.LowPart);
+        wsprintfW(pShared_->sessionSuffix, L"%08lX", seed ^ GetTickCount());
+    }
 
-    char dbg[256];
-    wsprintfA(dbg, "[HOOK] Hook system ready: sharedMem=%p overlayHwnd=%p scrubEvent=%p",
-        pShared_, pShared_->overlayHwnd, hScrubEvent_);
-    OutputDebugStringA(dbg);
+    wchar_t scrubName[128]{};
+    wsprintfW(scrubName, kScrubEventFmt, pShared_->sessionSuffix);
+    hScrubEvent_ = CreateEventW(&sa, FALSE, FALSE, scrubName);
+
+    DbgLog("[HOOK] Hook system ready: sharedMem=%p overlayHwnd=%p scrubEvent=%p suffix=%ls",
+        pShared_, pShared_->overlayHwnd, hScrubEvent_, pShared_->sessionSuffix);
     return true;
 }
 
@@ -451,8 +467,20 @@ void AppController::CleanupHookSystem() {
 bool AppController::ShouldSkipProcess(DWORD pid) {
     if (pid == 0 || pid == GetCurrentProcessId()) return true;
 
+    // Skip session 0 (system services) — matches original's ProcessIdToSessionId filter.
+    DWORD sessionId = 0;
+    if (!ProcessIdToSessionId(pid, &sessionId) || sessionId == 0) return true;
+
     HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!hProc) return true;
+
+    // Skip 32-bit (WoW64) processes — our 64-bit DLL can't load there.
+    BOOL isWow64 = FALSE;
+    IsWow64Process(hProc, &isWow64);
+    if (isWow64) {
+        CloseHandle(hProc);
+        return true;
+    }
 
     wchar_t procPath[MAX_PATH]{};
     DWORD pathLen = MAX_PATH;
@@ -474,108 +502,141 @@ bool AppController::ShouldSkipProcess(DWORD pid) {
     return false;
 }
 
+static bool IsDllLoadedInProcess(DWORD pid, const std::wstring& dllName) {
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
+    if (!hProc) return false;
+
+    HMODULE mods[512]{};
+    DWORD needed = 0;
+    if (K32EnumProcessModulesEx(hProc, mods, sizeof(mods), &needed, LIST_MODULES_64BIT)) {
+        DWORD count = needed / sizeof(HMODULE);
+        for (DWORD i = 0; i < count; i++) {
+            wchar_t modName[MAX_PATH]{};
+            if (K32GetModuleBaseNameW(hProc, mods[i], modName, MAX_PATH)) {
+                if (_wcsicmp(modName, dllName.c_str()) == 0) {
+                    CloseHandle(hProc);
+                    return true;
+                }
+            }
+        }
+    }
+    CloseHandle(hProc);
+    return false;
+}
+
 bool AppController::InjectIntoPid(DWORD pid) {
     if (injectedPids_.count(pid)) return true;
     if (ShouldSkipProcess(pid)) {
-        char dbg[128];
-        wsprintfA(dbg, "[INJECT] PID %lu: skipped (system/self/browser)", pid);
-        OutputDebugStringA(dbg);
+        DbgLog("[INJECT] PID %lu: skipped (system/self/browser/wow64/session0)", pid);
         return false;
     }
 
-    // Try enabling SeDebugPrivilege for access to elevated processes.
-    {
+    // Module-based duplicate check: verify the DLL isn't already loaded.
+    if (IsDllLoadedInProcess(pid, L"dxgi_assist.dll")) {
+        injectedPids_.insert(pid);
+        DbgLog("[INJECT] PID %lu: DLL already loaded (module check)", pid);
+        return true;
+    }
+
+    constexpr DWORD kInjAccess = PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
+        PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION;
+
+    bool elevatedPriv = false;
+    bool success = false;
+    HANDLE hProc = nullptr;
+    void* remoteMem = nullptr;
+    HANDLE hThread = nullptr;
+
+    hProc = OpenProcess(kInjAccess, FALSE, pid);
+    if (!hProc && GetLastError() == ERROR_ACCESS_DENIED) {
         HANDLE hToken = nullptr;
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hToken)) {
+        if (OpenProcessToken(GetCurrentProcess(),
+                TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
             TOKEN_PRIVILEGES tp{};
             tp.PrivilegeCount = 1;
             tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-            LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &tp.Privileges[0].Luid);
-            AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr, nullptr);
+            if (LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &tp.Privileges[0].Luid)) {
+                AdjustTokenPrivileges(hToken, FALSE, &tp, 0, nullptr, nullptr);
+                elevatedPriv = (GetLastError() == ERROR_SUCCESS);
+            }
             CloseHandle(hToken);
         }
+        hProc = OpenProcess(kInjAccess, FALSE, pid);
     }
-
-    HANDLE hProc = OpenProcess(
-        PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
-        PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION,
-        FALSE, pid);
     if (!hProc) {
-        char dbg[128];
-        wsprintfA(dbg, "[INJECT] PID %lu: OpenProcess FAILED GLE=%lu", pid, GetLastError());
-        OutputDebugStringA(dbg);
-        return false;
+        DbgLog("[INJECT] PID %lu: OpenProcess FAILED GLE=%lu", pid, GetLastError());
+        goto cleanup;
     }
 
-    size_t pathBytes = (hookDllPath_.size() + 1) * sizeof(wchar_t);
-    void* remoteMem = VirtualAllocEx(hProc, nullptr, pathBytes,
-        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-    if (!remoteMem) {
-        char dbg[128];
-        wsprintfA(dbg, "[INJECT] PID %lu: VirtualAllocEx FAILED GLE=%lu", pid, GetLastError());
-        OutputDebugStringA(dbg);
-        CloseHandle(hProc);
-        return false;
-    }
-
-    if (!WriteProcessMemory(hProc, remoteMem, hookDllPath_.c_str(), pathBytes, nullptr)) {
-        char dbg[128];
-        wsprintfA(dbg, "[INJECT] PID %lu: WriteProcessMemory FAILED GLE=%lu", pid, GetLastError());
-        OutputDebugStringA(dbg);
-        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return false;
-    }
-
-    auto loadLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(
-        GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
-    if (!loadLibAddr) {
-        OutputDebugStringA("[INJECT] GetProcAddress(LoadLibraryW) FAILED");
-        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return false;
-    }
-
-    HANDLE hThread = CreateRemoteThread(hProc, nullptr, 0,
-        loadLibAddr, remoteMem, 0, nullptr);
-    if (!hThread) {
-        char dbg[128];
-        wsprintfA(dbg, "[INJECT] PID %lu: CreateRemoteThread FAILED GLE=%lu", pid, GetLastError());
-        OutputDebugStringA(dbg);
-        VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-        CloseHandle(hProc);
-        return false;
-    }
-
-    WaitForSingleObject(hThread, 5000);
-
-    DWORD exitCode = 0;
-    GetExitCodeThread(hThread, &exitCode);
-
-    CloseHandle(hThread);
-    VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
-    CloseHandle(hProc);
-
-    char dbg[128];
-    wsprintfA(dbg, "[INJECT] PID %lu: LoadLibraryW exitCode=0x%08lX (%s)",
-        pid, exitCode, exitCode ? "SUCCESS" : "DLL LOAD FAILED");
-    OutputDebugStringA(dbg);
-
-    if (exitCode != 0) {
-        injectedPids_.insert(pid);
-
-        wchar_t eventName[128]{};
-        wsprintfW(eventName, kHookActiveEventFmt, pid);
-        HANDLE hReady = OpenEventW(SYNCHRONIZE, FALSE, eventName);
-        if (hReady) {
-            WaitForSingleObject(hReady, 3000);
-            CloseHandle(hReady);
-            OutputDebugStringA("[INJECT] Hook ready event signaled");
-        } else {
-            Sleep(200);
-            OutputDebugStringA("[INJECT] Hook ready event not found, waited 200ms fallback");
+    {
+        size_t pathBytes = (hookDllPath_.size() + 1) * sizeof(wchar_t);
+        remoteMem = VirtualAllocEx(hProc, nullptr, pathBytes,
+            MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (!remoteMem) {
+            DbgLog("[INJECT] PID %lu: VirtualAllocEx FAILED GLE=%lu", pid, GetLastError());
+            goto cleanup;
         }
-        return true;
+
+        if (!WriteProcessMemory(hProc, remoteMem, hookDllPath_.c_str(), pathBytes, nullptr)) {
+            DbgLog("[INJECT] PID %lu: WriteProcessMemory FAILED GLE=%lu", pid, GetLastError());
+            goto cleanup;
+        }
+
+        auto loadLibAddr = reinterpret_cast<LPTHREAD_START_ROUTINE>(
+            GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"));
+        if (!loadLibAddr) {
+            DbgLog("[INJECT] GetProcAddress(LoadLibraryW) FAILED");
+            goto cleanup;
+        }
+
+        hThread = CreateRemoteThread(hProc, nullptr, 0,
+            loadLibAddr, remoteMem, 0, nullptr);
+        if (!hThread) {
+            DbgLog("[INJECT] PID %lu: CreateRemoteThread FAILED GLE=%lu", pid, GetLastError());
+            goto cleanup;
+        }
+
+        WaitForSingleObject(hThread, 5000);
+
+        DWORD exitCode = 0;
+        GetExitCodeThread(hThread, &exitCode);
+
+        DbgLog("[INJECT] PID %lu: LoadLibraryW exitCode=0x%08lX (%s)",
+            pid, exitCode, exitCode ? "SUCCESS" : "DLL LOAD FAILED");
+
+        if (exitCode != 0) {
+            injectedPids_.insert(pid);
+            success = true;
+
+            wchar_t eventName[128]{};
+            wsprintfW(eventName, kHookActiveEventFmt, pid, pShared_->sessionSuffix);
+            HANDLE hReady = OpenEventW(SYNCHRONIZE, FALSE, eventName);
+            if (hReady) {
+                WaitForSingleObject(hReady, 3000);
+                CloseHandle(hReady);
+                DbgLog("[INJECT] Hook ready event signaled");
+            } else {
+                Sleep(200);
+                DbgLog("[INJECT] Hook ready event not found, waited 200ms fallback");
+            }
+        }
     }
-    return false;
+
+cleanup:
+    if (hThread)    CloseHandle(hThread);
+    if (remoteMem && hProc) VirtualFreeEx(hProc, remoteMem, 0, MEM_RELEASE);
+    if (hProc)      CloseHandle(hProc);
+
+    if (elevatedPriv) {
+        HANDLE hTok = nullptr;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &hTok)) {
+            TOKEN_PRIVILEGES tp{};
+            tp.PrivilegeCount = 1;
+            tp.Privileges[0].Attributes = 0;
+            LookupPrivilegeValueW(nullptr, SE_DEBUG_NAME, &tp.Privileges[0].Luid);
+            AdjustTokenPrivileges(hTok, FALSE, &tp, 0, nullptr, nullptr);
+            CloseHandle(hTok);
+        }
+    }
+    return success;
 }

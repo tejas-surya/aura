@@ -41,14 +41,14 @@ real app's caret still blinks; (c) Ctrl+Shift+H and Ctrl+Shift+D still fire.
 
 ## Build / deploy / versioning
 - Build: `cd rebuilt_src && .\build.bat` (configures CMake, builds
-  `MYOWNAPP_rebuilt`, deploys to workspace root, and auto-saves a timestamped
+  `DesktopWidget`, deploys to workspace root, and auto-saves a timestamped
   copy to `exports/`).
 - When deploying, stop any running instance first:
-  `Stop-Process -Name MYOWNAPP_rebuilt -Force -ErrorAction SilentlyContinue`.
-- Keep every build. `exports/MYOWNAPP_rebuilt_<YYYYMMDD-HHmmss>.exe` + a dated
-  entry in `VERSIONS.md`; the root `MYOWNAPP_rebuilt.exe` matches the newest.
+  `Stop-Process -Name DesktopWidget -Force -ErrorAction SilentlyContinue`.
+- Keep every build. `exports/DesktopWidget_<YYYYMMDD-HHmmss>.exe` + a dated
+  entry in `VERSIONS.md`; the root `DesktopWidget.exe` matches the newest.
 - `exports/` MUST stay self-contained: whenever you put an exe there, also copy
-  `WebView2Loader.dll` (required to launch) and `app_hook.dll` (optional) next to
+  `WebView2Loader.dll` (required to launch) and `dxgi_assist.dll` (optional) next to
   it, or it fails with "WebView2Loader.dll was not found". `build.bat` does this
   automatically; if you build/export manually, copy those DLLs too.
 - No licensing/quota in the rebuild — keep it that way (unlimited use).

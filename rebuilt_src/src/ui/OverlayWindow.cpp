@@ -54,7 +54,7 @@ bool OverlayWindow::Create(int width, int height, int opacity) {
     int y = workArea.top + 50;
 
     hwnd_ = CreateWindowExW(
-        exStyle, kClassName, L"MYOWNAPP",
+        exStyle, kClassName, L"",
         style,
         x, y, width, height,
         nullptr, nullptr, controller_.GetInstance(), this);
@@ -76,27 +76,36 @@ bool OverlayWindow::Create(int width, int height, int opacity) {
         EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_REORDER,
         nullptr, WinEventProc, 0, 0, WINEVENT_OUTOFCONTEXT);
 
-    s_keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
-        GetModuleHandleW(nullptr), 0);
-    s_mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
-        GetModuleHandleW(nullptr), 0);
-
     SetTimer(hwnd_, kTopmostTimer, 1000, nullptr);
+
+    // LL hooks installed lazily in Show(), removed in Hide() — minimizes the
+    // time window where the hooks are visible in the global hook chain.
 
     return true;
 }
 
 void OverlayWindow::Show(int nCmdShow) {
     ShowWindow(hwnd_, nCmdShow);
-    ApplyCaptureProtection();  // re-assert capture exclusion on every show
+    ApplyCaptureProtection();
     ReassertTopmost();
+    InstallHooks();
 }
 
 void OverlayWindow::Hide() {
+    RemoveHooks();
     ShowWindow(hwnd_, SW_HIDE);
 }
 
-void OverlayWindow::Destroy() {
+void OverlayWindow::InstallHooks() {
+    if (!s_keyboardHook_)
+        s_keyboardHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc,
+            GetModuleHandleW(nullptr), 0);
+    if (!s_mouseHook_)
+        s_mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, LowLevelMouseProc,
+            GetModuleHandleW(nullptr), 0);
+}
+
+void OverlayWindow::RemoveHooks() {
     if (s_keyboardHook_) {
         UnhookWindowsHookEx(s_keyboardHook_);
         s_keyboardHook_ = nullptr;
@@ -105,6 +114,10 @@ void OverlayWindow::Destroy() {
         UnhookWindowsHookEx(s_mouseHook_);
         s_mouseHook_ = nullptr;
     }
+}
+
+void OverlayWindow::Destroy() {
+    RemoveHooks();
     if (winEventHook_) {
         UnhookWinEvent(winEventHook_);
         winEventHook_ = nullptr;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(MYOWNAPP VERSION 1.0.0 LANGUAGES CXX)
+project(DesktopWidget VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,7 +25,7 @@ find_path(NLOHMANN_JSON_INCLUDE_DIR
 )
 
 # Main executable
-add_executable(MYOWNAPP_rebuilt WIN32
+add_executable(DesktopWidget WIN32
     src/main.cpp
     src/app/AppController.cpp
     src/app/ConfigManager.cpp
@@ -42,14 +42,14 @@ add_executable(MYOWNAPP_rebuilt WIN32
     res/app.rc
 )
 
-target_include_directories(MYOWNAPP_rebuilt PRIVATE
+target_include_directories(DesktopWidget PRIVATE
     src
     hook_dll
     ${WEBVIEW2_INCLUDE_DIR}
     ${NLOHMANN_JSON_INCLUDE_DIR}
 )
 
-target_link_libraries(MYOWNAPP_rebuilt PRIVATE
+target_link_libraries(DesktopWidget PRIVATE
     ${WEBVIEW2_LOADER_LIB}
     user32 gdi32 gdiplus ole32 oleaut32 shell32
     dwmapi d3d11 dxgi
@@ -58,16 +58,16 @@ target_link_libraries(MYOWNAPP_rebuilt PRIVATE
     uiautomationcore shlwapi comctl32
 )
 
-target_compile_definitions(MYOWNAPP_rebuilt PRIVATE
+target_compile_definitions(DesktopWidget PRIVATE
     UNICODE _UNICODE
     NOMINMAX
 )
 
 if(MSVC)
-    target_compile_options(MYOWNAPP_rebuilt PRIVATE /W4 /utf-8)
-    target_link_options(MYOWNAPP_rebuilt PRIVATE /MANIFEST:NO)
+    target_compile_options(DesktopWidget PRIVATE /W4 /utf-8)
+    target_link_options(DesktopWidget PRIVATE /MANIFEST:NO)
 else()
-    target_compile_options(MYOWNAPP_rebuilt PRIVATE -Wall -Wextra)
+    target_compile_options(DesktopWidget PRIVATE -Wall -Wextra)
 endif()
 
 # Hook DLL (MinGW or MSVC)

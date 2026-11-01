@@ -174,13 +174,13 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
     </ProjectReference>
-    <ProjectReference Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\MYOWNAPP_rebuilt.vcxproj">
-      <Project>{5B0C92D6-53B2-3B65-AF28-EEA80F4A1C4E}</Project>
-      <Name>MYOWNAPP_rebuilt</Name>
+    <ProjectReference Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.vcxproj">
+      <Project>{32A4688B-9E7D-3DD1-8DF6-83783DA4B3C8}</Project>
+      <Name>DesktopWidget</Name>
     </ProjectReference>
-    <ProjectReference Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\hook_dll\app_hook.vcxproj">
-      <Project>{9BD023C3-9811-364B-91C4-998C0117D44F}</Project>
-      <Name>app_hook</Name>
+    <ProjectReference Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\hook_dll\dxgi_assist.vcxproj">
+      <Project>{2135B94D-7DFA-3562-BED7-79EB01DB124A}</Project>
+      <Name>dxgi_assist</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

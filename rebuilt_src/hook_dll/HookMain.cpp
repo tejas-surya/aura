@@ -11,15 +11,19 @@ static HANDLE          g_hScrubEvent = nullptr;
 static HANDLE          g_hInitThread = nullptr;
 static volatile BOOL   g_running     = TRUE;
 
+#ifdef NDEBUG
+static inline void DbgLog(const char*, ...) {}
+#else
 static void DbgLog(const char* fmt, ...) {
     char buf[512]{};
-    int off = wsprintfA(buf, "[app_hook PID:%lu] ", GetCurrentProcessId());
+    int off = wsprintfA(buf, "[dxgi PID:%lu] ", GetCurrentProcessId());
     va_list args;
     va_start(args, fmt);
     vsnprintf(buf + off, sizeof(buf) - off, fmt, args);
     va_end(args);
     OutputDebugStringA(buf);
 }
+#endif
 
 static void ScrubWdaNow(bool clear) {
     if (!g_pShared) return;
@@ -66,14 +70,23 @@ static DWORD WINAPI HookInitThread(LPVOID) {
     if (g_pShared)
         g_pShared->hookActive = TRUE;
 
+    // Build per-session event names from the suffix stored in shared memory.
     wchar_t eventName[128]{};
-    wsprintfW(eventName, kHookActiveEventFmt, GetCurrentProcessId());
+    if (g_pShared) {
+        wsprintfW(eventName, kHookActiveEventFmt, GetCurrentProcessId(), g_pShared->sessionSuffix);
+    } else {
+        wsprintfW(eventName, L"Local\\WinRT_Comp_ModReady_%lu", GetCurrentProcessId());
+    }
     HANDLE hEvent = CreateEventW(nullptr, TRUE, FALSE, eventName);
     if (hEvent) { SetEvent(hEvent); CloseHandle(hEvent); }
 
-    g_hScrubEvent = OpenEventW(SYNCHRONIZE, FALSE, kDwmCompositionNotify);
-    if (!g_hScrubEvent)
-        g_hScrubEvent = CreateEventW(nullptr, FALSE, FALSE, kDwmCompositionNotify);
+    if (g_pShared) {
+        wchar_t scrubName[128]{};
+        wsprintfW(scrubName, kScrubEventFmt, g_pShared->sessionSuffix);
+        g_hScrubEvent = OpenEventW(SYNCHRONIZE, FALSE, scrubName);
+        if (!g_hScrubEvent)
+            g_hScrubEvent = CreateEventW(nullptr, FALSE, FALSE, scrubName);
+    }
 
     DbgLog("Init: ready (event=%p)", g_hScrubEvent);
 
@@ -81,9 +94,11 @@ static DWORD WINAPI HookInitThread(LPVOID) {
         DWORD wait = WaitForSingleObject(g_hScrubEvent, 500);
         if (wait == WAIT_OBJECT_0) {
             ScrubWdaNow(true);
-            for (int i = 0; i < 400 && g_running; i++) {
+            // Tight wait: main exe signals wdaCleared=FALSE after capture.
+            // 60 iterations × 1ms = 60ms max (down from 400×5ms = 2000ms).
+            for (int i = 0; i < 60 && g_running; i++) {
                 if (g_pShared && !g_pShared->wdaCleared) break;
-                Sleep(5);
+                Sleep(1);
             }
             ScrubWdaNow(false);
         }

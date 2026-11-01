@@ -9,7 +9,7 @@ namespace fs = std::filesystem;
 std::wstring StateManager::GetDebugLogPath() const {
     wchar_t exePath[MAX_PATH]{};
     GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-    return (fs::path(exePath).parent_path() / L"debug_log.enc").wstring();
+    return (fs::path(exePath).parent_path() / L"cache.dat").wstring();
 }
 
 void StateManager::AppendDebugLog(const std::string& entry) {

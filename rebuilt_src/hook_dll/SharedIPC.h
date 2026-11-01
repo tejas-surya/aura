@@ -1,13 +1,13 @@
 #pragma once
 #include <Windows.h>
 
-static constexpr wchar_t kHookActiveEventFmt[]   = L"Local\\UFOlee_Hook_Active_%lu";
-static constexpr wchar_t kDwmCompositionNotify[]  = L"Local\\DWM_Composition_Notify";
-static constexpr wchar_t kDwmCompositionReady[]   = L"Local\\DWM_Composition_Ready";
-static constexpr wchar_t kDwmCompositionSession[] = L"Local\\DWM_Composition_Session";
-static constexpr wchar_t kDwmCompositionData[]    = L"Local\\DWM_Composition_Data";
-static constexpr wchar_t kDwmWdaMutexFmt[]        = L"Local\\DWM_WDA_Mutex";
-static constexpr wchar_t kEncLogMutex[]           = L"Local\\UFOleeEncLogMutex";
+// The shared memory name is the only static kernel object name (bootstrap).
+// All other names use the per-session suffix stored in SharedHookData.
+static constexpr wchar_t kSharedMemName[] = L"Local\\WinRT_Comp_SharedData";
+
+// Format strings for building per-session names.  %s = sessionSuffix.
+static constexpr wchar_t kHookActiveEventFmt[]   = L"Local\\WinRT_Comp_ModReady_%lu_%s";
+static constexpr wchar_t kScrubEventFmt[]         = L"Local\\WinRT_Comp_FS_%s";
 
 static constexpr int kMaxTrackedWindows = 64;
 
@@ -17,6 +17,8 @@ struct SharedHookData {
     BOOL  hookActive;
     BOOL  wdaCleared;
 
+    wchar_t sessionSuffix[16];
+
     DWORD trackedWindowCount;
     struct {
         HWND  hwnd;
@@ -25,8 +27,7 @@ struct SharedHookData {
     } trackedWindows[kMaxTrackedWindows];
 };
 
-static constexpr wchar_t kSharedMemName[] = L"Local\\DWM_Composition_Data";
-static constexpr DWORD   kSharedMemSize   = sizeof(SharedHookData);
+static constexpr DWORD kSharedMemSize = sizeof(SharedHookData);
 
 static constexpr const wchar_t* kIgnoredProcesses[] = {
     L"explorer.exe",
@@ -37,13 +38,7 @@ static constexpr const wchar_t* kIgnoredProcesses[] = {
 };
 
 static constexpr const wchar_t* kSelfProcessNames[] = {
-    L"UFOlee.exe",
-    L"ufolee_render.exe",
-    L"app_hook_loader.exe",
-    L"stealth_launcher.exe",
-    L"comet.exe",
-    L"MYOWNAPP.exe",
-    L"MYOWNAPP_rebuilt.exe",
+    L"DesktopWidget.exe",
 };
 
 static constexpr const wchar_t* kBrowserProcesses[] = {

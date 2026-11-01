@@ -1,0 +1,13 @@
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\main.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\main.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\AppController.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\AppController.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\ConfigManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\ConfigManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\StateManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\StateManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\OverlayWindow.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\OverlayWindow.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\ViewportManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\ViewportManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\browser\WebViewManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\WebViewManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\browser\WebBridgeEvents.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\WebBridgeEvents.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\input\HotkeyManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\HotkeyManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\input\TypingSimulator.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\TypingSimulator.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\automation\ScreenCapture.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\ScreenCapture.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\automation\TextExtractor.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\TextExtractor.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\crypto\CryptoUtils.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\CryptoUtils.obj

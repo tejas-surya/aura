@@ -8,7 +8,7 @@
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "gdiplus.lib")
 
-static constexpr wchar_t kMutexName[] = L"Local\\MYOWNAPP_SingleInstance_Mutex";
+static constexpr wchar_t kMutexName[] = L"Local\\WinRT_Comp_SessionLock";
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow) {
     HANDLE hMutex = CreateMutexW(nullptr, TRUE, kMutexName);

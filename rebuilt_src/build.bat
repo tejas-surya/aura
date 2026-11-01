@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo   MYOWNAPP - Automated Build Script
+echo   DesktopWidget - Automated Build Script
 echo ============================================================
 echo.
 
@@ -45,10 +45,10 @@ if not exist "packages\nlohmann_json" (
 :: user-data folder, so stale processes mean new code never takes effect).
 echo.
 echo [BUILD] Stopping previous instance and its WebView2 processes...
-taskkill /F /IM MYOWNAPP_rebuilt.exe >nul 2>&1
-:: Kill WebView2 processes that belong to our profile (command line contains "UFOlee").
+taskkill /F /IM DesktopWidget.exe >nul 2>&1
+:: Kill WebView2 processes that belong to our profile (command line contains "WebToolkit").
 :: Uses PowerShell because wmic is deprecated and unreliable on Win11.
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'UFOlee' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'WebToolkit' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
 timeout /t 2 /nobreak >nul 2>&1
 
 :: Build main application with CMake
@@ -62,16 +62,16 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo [BUILD] Building MYOWNAPP_rebuilt.exe...
-cmake --build build --config Release --target MYOWNAPP_rebuilt
+echo [BUILD] Building DesktopWidget.exe...
+cmake --build build --config Release --target DesktopWidget
 if %errorlevel% neq 0 (
     echo [ERROR] Build failed.
     exit /b 1
 )
 
 echo.
-echo [BUILD] Building app_hook.dll...
-cmake --build build --config Release --target app_hook
+echo [BUILD] Building dxgi_assist.dll...
+cmake --build build --config Release --target dxgi_assist
 if %errorlevel% neq 0 (
     echo [ERROR] Hook DLL build failed.
     exit /b 1
@@ -80,23 +80,23 @@ if %errorlevel% neq 0 (
 echo.
 echo ============================================================
 echo   BUILD SUCCESSFUL
-echo   Output: build\Release\MYOWNAPP_rebuilt.exe
-echo           build\hook_dll\Release\app_hook.dll
+echo   Output: build\Release\DesktopWidget.exe
+echo           build\hook_dll\Release\dxgi_assist.dll
 echo ============================================================
 echo.
 :: Final kill before deploy - processes may have respawned during the build.
-taskkill /F /IM MYOWNAPP_rebuilt.exe >nul 2>&1
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'UFOlee' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-copy /y "build\Release\MYOWNAPP_rebuilt.exe" "..\MYOWNAPP_rebuilt.exe" >nul
-if exist "build\hook_dll\Release\app_hook.dll" copy /y "build\hook_dll\Release\app_hook.dll" "..\app_hook.dll" >nul
+taskkill /F /IM DesktopWidget.exe >nul 2>&1
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"name='msedgewebview2.exe'\" | Where-Object { $_.CommandLine -match 'WebToolkit' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+copy /y "build\Release\DesktopWidget.exe" "..\DesktopWidget.exe" >nul
+if exist "build\hook_dll\Release\dxgi_assist.dll" copy /y "build\hook_dll\Release\dxgi_assist.dll" "..\dxgi_assist.dll" >nul
 if exist "..\WebView2Loader.dll" copy /y "..\WebView2Loader.dll" "build\Release\WebView2Loader.dll" >nul
 echo Binaries deployed to workspace root and build directory.
 
 :: Keep a timestamped copy of every build under ..\exports\
 if not exist "..\exports" mkdir "..\exports"
 for /f %%t in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd-HHmmss"') do set "STAMP=%%t"
-copy /y "build\Release\MYOWNAPP_rebuilt.exe" "..\exports\MYOWNAPP_rebuilt_%STAMP%.exe" >nul
+copy /y "build\Release\DesktopWidget.exe" "..\exports\DesktopWidget_%STAMP%.exe" >nul
 :: The exe needs its runtime DLLs sitting next to it to launch from exports\.
 if exist "..\WebView2Loader.dll" copy /y "..\WebView2Loader.dll" "..\exports\WebView2Loader.dll" >nul
-if exist "build\hook_dll\Release\app_hook.dll" copy /y "build\hook_dll\Release\app_hook.dll" "..\exports\app_hook.dll" >nul
-echo Versioned copy saved: exports\MYOWNAPP_rebuilt_%STAMP%.exe (with WebView2Loader.dll + app_hook.dll)
+if exist "build\hook_dll\Release\dxgi_assist.dll" copy /y "build\hook_dll\Release\dxgi_assist.dll" "..\exports\dxgi_assist.dll" >nul
+echo Versioned copy saved: exports\DesktopWidget_%STAMP%.exe (with WebView2Loader.dll + dxgi_assist.dll)

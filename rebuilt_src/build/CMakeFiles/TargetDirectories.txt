@@ -1,4 +1,4 @@
-C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/CMakeFiles/MYOWNAPP_rebuilt.dir
+C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/CMakeFiles/DesktopWidget.dir
 C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/CMakeFiles/ALL_BUILD.dir
 C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/CMakeFiles/ZERO_CHECK.dir
-C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/hook_dll/CMakeFiles/app_hook.dir
+C:/Users/LENOVO/Desktop/REA2/rebuilt_src/build/hook_dll/CMakeFiles/dxgi_assist.dir
