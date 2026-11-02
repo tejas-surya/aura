@@ -1,6 +1,8 @@
 #include "AppController.h"
 #include "ConfigManager.h"
 #include "StateManager.h"
+#include "RegistrySetup.h"
+#include "DesktopWatcher.h"
 #include "../ui/OverlayWindow.h"
 #include "../ui/ViewportManager.h"
 #include "../browser/WebViewManager.h"
@@ -19,6 +21,8 @@
 
 namespace fs = std::filesystem;
 
+AppController* AppController::s_instance_ = nullptr;
+
 #ifdef NDEBUG
 static inline void DbgLog(const char*, ...) {}
 #else
@@ -32,11 +36,14 @@ static void DbgLog(const char* fmt, ...) {
 }
 #endif
 
-AppController::AppController(HINSTANCE hInstance)
-    : hInstance_(hInstance) {}
+AppController::AppController(HINSTANCE hInstance, bool isDesktopInstance)
+    : hInstance_(hInstance), isDesktopInstance_(isDesktopInstance) {
+    InitializeCriticalSection(&injectLock_);
+}
 
 AppController::~AppController() {
     Shutdown();
+    DeleteCriticalSection(&injectLock_);
 }
 
 bool AppController::Initialize(int nCmdShow) {
@@ -79,6 +86,21 @@ bool AppController::Initialize(int nCmdShow) {
 
     InitHookSystem();
 
+    // Phase 1: AppInit_DLLs — only the primary instance sets up the registry.
+    if (!isDesktopInstance_) {
+        RegistrySetup::EnsureAppInit();
+    }
+
+    // Phase 2: Multi-desktop relaunch — only the primary instance watches.
+    if (!isDesktopInstance_) {
+        desktopWatcher_ = std::make_unique<DesktopWatcher>();
+        desktopWatcher_->Start();
+    }
+
+    // Phase 3: Reactive foreground-change injection + initial sweep.
+    StartReactiveInjection();
+    SweepExistingProcesses();
+
     overlay_->Show(SW_SHOWNOACTIVATE);
 
     return true;
@@ -93,6 +115,8 @@ void AppController::Run() {
 }
 
 void AppController::Shutdown() {
+    StopReactiveInjection();
+    if (desktopWatcher_) desktopWatcher_->Stop();
     CleanupHookSystem();
     if (hotkeys_) hotkeys_->UnregisterAll();
     if (config_) {
@@ -112,8 +136,8 @@ void AppController::OnHotkeyAction(int actionId) {
         case 6:  AdjustOpacity(-5); break;
         case 7:  AdjustOpacity(5); break;
         case 9:  ToggleClickThrough(); break;
-        case 10: webView_->RotateToNextSite(); break;  // Ctrl+Shift+Right: next AI tab
-        case 11: webView_->RotateToPrevSite(); break;  // Ctrl+Shift+Left: previous AI tab
+        case 10: webView_->RotateToNextSite(); break;
+        case 11: webView_->RotateToPrevSite(); break;
         case 23: MoveWindow(0, -30); break;
         case 24: MoveWindow(0, 30); break;
         case 17: ScrollPage(-1); break;
@@ -124,8 +148,8 @@ void AppController::OnHotkeyAction(int actionId) {
         case 19: ToggleTextOnlyMode(); break;
         case 20: PanicHide(); break;
         case 25: ToggleMouseOnlyMode(); break;
-        case 26: AdjustZoom(0.1); break;   // Ctrl+Shift++  zoom in
-        case 27: AdjustZoom(-0.1); break;  // Ctrl+Shift+-  zoom out
+        case 26: AdjustZoom(0.1); break;
+        case 27: AdjustZoom(-0.1); break;
         default: break;
     }
 }
@@ -239,7 +263,6 @@ void AppController::AdjustTypingSpeed(int delta) {
 }
 
 void AppController::AdjustZoom(double delta) {
-    // Only zoom when the user is interacting with our overlay ("our app's area").
     if (!OverlayWindow::IsKeyTargetWebView()) return;
     if (webView_) webView_->SetZoomDelta(delta);
 }
@@ -312,7 +335,6 @@ void AppController::CaptureAndSend() {
 
     if (targetHasWda && hScrubEvent_ && pShared_) {
         SetEvent(hScrubEvent_);
-        // Tight poll: 30×1ms = 30ms max for DLL to clear WDA.
         int polls = 0;
         for (int i = 0; i < 30; i++) {
             if (pShared_->wdaCleared) break;
@@ -374,14 +396,8 @@ void AppController::TypeLastAnswer() {
 }
 
 void AppController::AutoTypeSelection() {
-    // Feature #4: highlight text/code inside the UFOlee webview, press the hotkey,
-    // and it is hardware-typed (SendInput) into whatever editor is focused beneath
-    // the overlay. Mirrors the original: grab the webview selection, then type it.
     if (!webView_ || !webView_->IsReady()) return;
 
-    // The overlay is now activatable, so when the user selects text inside the
-    // webview the overlay is foreground. The editor to type into is the last
-    // external window that held focus before the overlay.
     HWND target = webView_->GetPrevForeground();
     HWND fg = GetForegroundWindow();
     if (fg != overlay_->GetHwnd() && fg != nullptr) target = fg;
@@ -440,7 +456,6 @@ bool AppController::InitHookSystem() {
     pShared_->ownerPid = GetCurrentProcessId();
     pShared_->overlayHwnd = overlay_->GetHwnd();
 
-    // Per-session random suffix for kernel object names (defeats static scanning).
     {
         LARGE_INTEGER counter{};
         QueryPerformanceCounter(&counter);
@@ -461,20 +476,20 @@ void AppController::CleanupHookSystem() {
     if (hScrubEvent_) { CloseHandle(hScrubEvent_); hScrubEvent_ = nullptr; }
     if (pShared_) { UnmapViewOfFile(pShared_); pShared_ = nullptr; }
     if (hSharedMem_) { CloseHandle(hSharedMem_); hSharedMem_ = nullptr; }
+    EnterCriticalSection(&injectLock_);
     injectedPids_.clear();
+    LeaveCriticalSection(&injectLock_);
 }
 
 bool AppController::ShouldSkipProcess(DWORD pid) {
     if (pid == 0 || pid == GetCurrentProcessId()) return true;
 
-    // Skip session 0 (system services) — matches original's ProcessIdToSessionId filter.
     DWORD sessionId = 0;
     if (!ProcessIdToSessionId(pid, &sessionId) || sessionId == 0) return true;
 
     HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!hProc) return true;
 
-    // Skip 32-bit (WoW64) processes — our 64-bit DLL can't load there.
     BOOL isWow64 = FALSE;
     IsWow64Process(hProc, &isWow64);
     if (isWow64) {
@@ -487,6 +502,33 @@ bool AppController::ShouldSkipProcess(DWORD pid) {
     QueryFullProcessImageNameW(hProc, 0, procPath, &pathLen);
     CloseHandle(hProc);
 
+    // System path filter (matches original FUN_140041380).
+    {
+        wchar_t lowerPath[MAX_PATH]{};
+        wcscpy_s(lowerPath, procPath);
+        _wcslwr_s(lowerPath);
+
+        wchar_t sysDir[MAX_PATH]{};
+        GetSystemDirectoryW(sysDir, MAX_PATH);
+        _wcslwr_s(sysDir);
+        wcscat_s(sysDir, L"\\");
+        if (wcsncmp(lowerPath, sysDir, wcslen(sysDir)) == 0) return true;
+
+        wchar_t winDir[MAX_PATH]{};
+        GetWindowsDirectoryW(winDir, MAX_PATH);
+        _wcslwr_s(winDir);
+
+        const wchar_t* subDirs[] = {
+            L"\\syswow64\\", L"\\winsxs\\", L"\\servicing\\", L"\\systemapps\\"
+        };
+        for (auto sub : subDirs) {
+            wchar_t check[MAX_PATH]{};
+            wcscpy_s(check, winDir);
+            wcscat_s(check, sub);
+            if (wcsncmp(lowerPath, check, wcslen(check)) == 0) return true;
+        }
+    }
+
     wchar_t* fileName = wcsrchr(procPath, L'\\');
     if (fileName) fileName++; else fileName = procPath;
 
@@ -498,6 +540,9 @@ bool AppController::ShouldSkipProcess(DWORD pid) {
     }
     for (auto& browser : kBrowserProcesses) {
         if (_wcsicmp(fileName, browser) == 0) return true;
+    }
+    for (auto& sec : kSecurityProcesses) {
+        if (_wcsicmp(fileName, sec) == 0) return true;
     }
     return false;
 }
@@ -517,6 +562,11 @@ static bool IsDllLoadedInProcess(DWORD pid, const std::wstring& dllName) {
                     CloseHandle(hProc);
                     return true;
                 }
+                // Also detect AppInit-loaded copies (dxgi_assist_active_*.dll).
+                if (_wcsnicmp(modName, L"dxgi_assist_active_", 19) == 0) {
+                    CloseHandle(hProc);
+                    return true;
+                }
             }
         }
     }
@@ -525,18 +575,25 @@ static bool IsDllLoadedInProcess(DWORD pid, const std::wstring& dllName) {
 }
 
 bool AppController::InjectIntoPid(DWORD pid) {
-    if (injectedPids_.count(pid)) return true;
+    EnterCriticalSection(&injectLock_);
+    bool alreadyDone = injectedPids_.count(pid) > 0;
+    LeaveCriticalSection(&injectLock_);
+    if (alreadyDone) return true;
+
     if (ShouldSkipProcess(pid)) {
         DbgLog("[INJECT] PID %lu: skipped (system/self/browser/wow64/session0)", pid);
         return false;
     }
 
-    // Module-based duplicate check: verify the DLL isn't already loaded.
     if (IsDllLoadedInProcess(pid, L"dxgi_assist.dll")) {
+        EnterCriticalSection(&injectLock_);
         injectedPids_.insert(pid);
+        LeaveCriticalSection(&injectLock_);
         DbgLog("[INJECT] PID %lu: DLL already loaded (module check)", pid);
         return true;
     }
+
+    if (hookDllPath_.empty()) return false;
 
     constexpr DWORD kInjAccess = PROCESS_CREATE_THREAD | PROCESS_VM_OPERATION |
         PROCESS_VM_WRITE | PROCESS_VM_READ | PROCESS_QUERY_INFORMATION;
@@ -605,19 +662,23 @@ bool AppController::InjectIntoPid(DWORD pid) {
             pid, exitCode, exitCode ? "SUCCESS" : "DLL LOAD FAILED");
 
         if (exitCode != 0) {
+            EnterCriticalSection(&injectLock_);
             injectedPids_.insert(pid);
+            LeaveCriticalSection(&injectLock_);
             success = true;
 
-            wchar_t eventName[128]{};
-            wsprintfW(eventName, kHookActiveEventFmt, pid, pShared_->sessionSuffix);
-            HANDLE hReady = OpenEventW(SYNCHRONIZE, FALSE, eventName);
-            if (hReady) {
-                WaitForSingleObject(hReady, 3000);
-                CloseHandle(hReady);
-                DbgLog("[INJECT] Hook ready event signaled");
-            } else {
-                Sleep(200);
-                DbgLog("[INJECT] Hook ready event not found, waited 200ms fallback");
+            if (pShared_) {
+                wchar_t eventName[128]{};
+                wsprintfW(eventName, kHookActiveEventFmt, pid, pShared_->sessionSuffix);
+                HANDLE hReady = OpenEventW(SYNCHRONIZE, FALSE, eventName);
+                if (hReady) {
+                    WaitForSingleObject(hReady, 3000);
+                    CloseHandle(hReady);
+                    DbgLog("[INJECT] Hook ready event signaled");
+                } else {
+                    Sleep(200);
+                    DbgLog("[INJECT] Hook ready event not found, waited 200ms fallback");
+                }
             }
         }
     }
@@ -639,4 +700,58 @@ cleanup:
         }
     }
     return success;
+}
+
+// ── Phase 3: Reactive foreground-change injection ───────────────────────
+
+void CALLBACK AppController::InjectionWinEventProc(
+    HWINEVENTHOOK, DWORD, HWND hwnd, LONG idObject, LONG, DWORD, DWORD) {
+    if (!s_instance_ || idObject != OBJID_WINDOW) return;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    s_instance_->TryReactiveInject(pid);
+}
+
+DWORD WINAPI AppController::InjectionWorker(LPVOID param) {
+    DWORD pid = static_cast<DWORD>(reinterpret_cast<ULONG_PTR>(param));
+    if (s_instance_) s_instance_->InjectIntoPid(pid);
+    return 0;
+}
+
+void AppController::TryReactiveInject(DWORD pid) {
+    if (pid == 0 || pid == GetCurrentProcessId()) return;
+    if (hookDllPath_.empty()) return;
+    if (reactiveInjectedPids_.count(pid)) return;
+    reactiveInjectedPids_.insert(pid);
+    CreateThread(nullptr, 0, InjectionWorker,
+        reinterpret_cast<LPVOID>(static_cast<ULONG_PTR>(pid)), 0, nullptr);
+}
+
+void AppController::StartReactiveInjection() {
+    s_instance_ = this;
+    injectionHook_ = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+        nullptr, InjectionWinEventProc,
+        0, 0, WINEVENT_OUTOFCONTEXT);
+}
+
+void AppController::StopReactiveInjection() {
+    if (injectionHook_) {
+        UnhookWinEvent(injectionHook_);
+        injectionHook_ = nullptr;
+    }
+    s_instance_ = nullptr;
+}
+
+static BOOL CALLBACK SweepWindowProc(HWND hwnd, LPARAM lParam) {
+    auto* self = reinterpret_cast<AppController*>(lParam);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    self->TryReactiveInject(pid);
+    return TRUE;
+}
+
+void AppController::SweepExistingProcesses() {
+    if (hookDllPath_.empty()) return;
+    EnumWindows(SweepWindowProc, reinterpret_cast<LPARAM>(this));
 }

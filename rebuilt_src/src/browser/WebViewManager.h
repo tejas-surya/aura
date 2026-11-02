@@ -81,7 +81,7 @@ public:
 
     void SetZoom(double factor);
     double GetZoom() const { return zoomFactor_; }
-    bool IsReady() const { return webView_ != nullptr; }
+    bool IsReady() const { return webView_ != nullptr || dockedEdgeMode_; }
 
 private:
     void OnEnvironmentCreated(HRESULT result, ICoreWebView2Environment* env);
@@ -98,9 +98,22 @@ private:
     RECT GetWebViewBounds() const;
     std::wstring ResolveUrl(const std::wstring& siteKey) const;
     std::wstring GetUserDataFolder() const;
+    std::wstring FindBrowserExecutableFolder() const;
+    bool CreateWebViewEnvironment(const std::wstring& browserPath,
+                                  const std::wstring& userDataFolder);
+
+    bool LaunchAndDockEdge();
+    std::wstring FindEdgePath() const;
+    static BOOL CALLBACK EdgeEnumProc(HWND hwnd, LPARAM lParam);
+    static DWORD WINAPI EdgeFinderThread(LPVOID param);
 
     AppController& controller_;
     HWND parentHwnd_ = nullptr;
+    int initRetries_ = 0;
+    bool dockedEdgeMode_ = false;
+    HANDLE edgeProcess_ = nullptr;
+    DWORD edgePid_ = 0;
+    HWND edgeHwnd_ = nullptr;
 
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> environment_;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> webViewController_;

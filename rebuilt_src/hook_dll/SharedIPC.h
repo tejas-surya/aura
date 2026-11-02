@@ -54,3 +54,11 @@ static constexpr const wchar_t* kBrowserProcesses[] = {
     L"CefSharp.BrowserSubprocess.exe",
     L"AcroCEF.exe",
 };
+
+static constexpr const wchar_t* kSecurityProcesses[] = {
+    L"MsMpEng.exe",
+    L"MpCmdRun.exe",
+    L"SecurityHealthService.exe",
+    L"bduserhost.exe",
+    L"bdagent.exe",
+};

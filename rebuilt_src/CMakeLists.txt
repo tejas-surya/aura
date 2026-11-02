@@ -30,6 +30,8 @@ add_executable(DesktopWidget WIN32
     src/app/AppController.cpp
     src/app/ConfigManager.cpp
     src/app/StateManager.cpp
+    src/app/RegistrySetup.cpp
+    src/app/DesktopWatcher.cpp
     src/ui/OverlayWindow.cpp
     src/ui/ViewportManager.cpp
     src/browser/WebViewManager.cpp

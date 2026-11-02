@@ -15,6 +15,7 @@ public:
     void Show(int nCmdShow = SW_SHOWNOACTIVATE);
     void Hide();
     void Destroy();
+    void RequestClose();
 
     void SetOpacity(int percent);
     void SetClickThrough(bool enable);
@@ -68,6 +69,7 @@ private:
     HWND hwnd_ = nullptr;
     bool clickThrough_ = false;
     bool mouseReveal_ = false;
+    bool closeRequested_ = false;
     int currentOpacity_ = 100;
     int savedOpacity_ = 100;
 

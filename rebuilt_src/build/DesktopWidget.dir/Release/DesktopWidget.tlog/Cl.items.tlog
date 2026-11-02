@@ -2,6 +2,8 @@ C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\main.cpp;C:\Users\LENOVO\Desktop\RE
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\AppController.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\AppController.obj
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\ConfigManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\ConfigManager.obj
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\StateManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\StateManager.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\RegistrySetup.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\RegistrySetup.obj
+C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\DesktopWatcher.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\DesktopWatcher.obj
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\OverlayWindow.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\OverlayWindow.obj
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\ViewportManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\ViewportManager.obj
 C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\browser\WebViewManager.cpp;C:\Users\LENOVO\Desktop\REA2\rebuilt_src\build\DesktopWidget.dir\Release\WebViewManager.obj

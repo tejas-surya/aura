@@ -13,6 +13,12 @@
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\StateManager.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\RegistrySetup.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\DesktopWatcher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\OverlayWindow.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

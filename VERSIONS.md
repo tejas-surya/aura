@@ -6,6 +6,199 @@ newest entry below.
 
 ---
 
+## v22 — 2026-11-02 15:37:48
+File: `exports/DesktopWidget_20261102-153748.exe`
+
+**LaunchAndDockEdge — match the original's lockdown approach**: The original
+MYOWNAPP.exe does NOT use WebView2 on lockdown desktops at all. It launches
+Microsoft Edge as a standalone process and embeds its window. Replicated
+this exactly:
+
+1. **Satellite uses standalone Edge, not WebView2**: When `--desktop-instance`,
+   skips WebView2 entirely and calls `LaunchAndDockEdge()`.
+2. **Edge launched with `--app=<URL>`**: Opens in app mode (no browser chrome).
+   Full flags match the original: `--remote-debugging-port=<PORT>
+   --remote-allow-origins=* --no-sandbox --test-type --no-first-run
+   --no-default-browser-check --disable-features=Translate
+   --disable-blink-features=AutomationControlled --force-device-scale-factor=1`.
+3. **Free port allocation**: Binds TCP socket to `127.0.0.1:0` to get an
+   OS-assigned port for `--remote-debugging-port`, matching original's approach.
+   Fallback: port 9222.
+4. **Worker thread finds Edge window**: `EnumWindows` polls for 10 seconds
+   looking for `Chrome_WidgetWin_1`/`Chrome_WidgetWin_0` belonging to the
+   Edge PID.
+5. **SetParent embedding**: Edge window is stripped of its chrome
+   (WS_CAPTION/WS_THICKFRAME) and embedded as a child of the
+   WS_EX_NOACTIVATE overlay, positioned below the toolbar.
+6. **Primary (normal desktop) unchanged**: Still uses WebView2 with the
+   `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` env var from v21.
+
+---
+
+## v21 — 2026-11-02 15:05:51
+File: `exports/DesktopWidget_20261102-150551.exe`
+
+**Match original's WebView2 approach** — reverse-engineered how MYOWNAPP.exe
+makes WebView2 work on lockdown desktops and replicated it exactly:
+
+1. **`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` env var**: The original sets
+   browser flags via the environment variable, not `put_AdditionalBrowserArguments`.
+   The env var is read by the WebView2 loader DLL itself and inherited by all
+   child processes. Set in `main.cpp` before any WebView2 initialization.
+2. **Exact original flags**: `--no-sandbox --in-process-gpu
+   --force-device-scale-factor=1 --disable-features=RendererCodeIntegrity,
+   FlashDeprecation,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,
+   msWebView2BrowserHitTransparent --allow-no-sandbox-job
+   --disable-win32k-lockdown`. Key flags we were missing:
+   `--allow-no-sandbox-job` (allows browser without job object restriction),
+   `--force-device-scale-factor=1`, `--disable-features=RendererCodeIntegrity`.
+3. **User data folder next to exe**: Changed from `%LOCALAPPDATA%\Microsoft\WebToolkit`
+   to `webview2_data_Default` / `webview2_data_<PID>` next to the executable,
+   matching the original's pattern.
+4. **Removed `put_AdditionalBrowserArguments`**: The API call was removed since
+   the env var approach is superior — passes `nullptr` for options now.
+
+---
+
+## v20 — 2026-11-02 14:32:28
+File: `exports/DesktopWidget_20261102-143228.exe`
+
+**Reverted explicit browser path** — v19's `FindBrowserExecutableFolder` found
+a wrong-architecture runtime (x86 vs x64 mismatch), causing WebView2 env
+creation to fail silently on the normal desktop. Reverted to `nullptr`
+(auto-detect). Satellite still uses per-PID data folder + sandbox flags.
+
+---
+
+## v19 — 2026-11-02 14:25:44
+File: `exports/DesktopWidget_20261102-142544.exe`
+
+**WebView2 lockdown-desktop initialization fix** — WebView2 was silently failing
+to create on lockdown desktops (blank window, no navigation):
+
+1. **Per-PID user data folder**: Satellite instances now use
+   `Satellite_<PID>` instead of a shared `Satellite` folder. Crashed v17
+   satellites left the folder locked, causing all subsequent satellites to
+   fail silently on `CreateCoreWebView2EnvironmentWithOptions`. Primary
+   instance cleans up stale `Satellite_*` folders on startup.
+2. **Explicit browser path**: Finds the WebView2 runtime at
+   `C:\Program Files (x86)\Microsoft\EdgeWebView\Application\<ver>` and
+   passes it directly, bypassing registry lookup that can fail on restricted
+   desktops.
+3. **Restored `--in-process-gpu`**: The original uses this flag — it runs
+   GPU work inside our process instead of spawning a separate GPU process
+   that can't start on a lockdown desktop. Safe now because DACL protection
+   (v18) prevents external TerminateProcess and the crash guard catches
+   internal GPU exceptions.
+4. **Retry mechanism**: If async environment creation fails, retries up to
+   3 times with fresh temp-directory user data folders.
+
+---
+
+## v18 — 2026-11-02 14:11:04
+File: `exports/DesktopWidget_20261102-141104.exe`
+
+**Anti-kill + crash fix** — fixes the v17 regression (appear/disappear loop returned):
+
+1. **Process DACL protection**: Denies `PROCESS_TERMINATE` to Everyone via
+   `SetSecurityInfo`. Lockdown browsers that call `TerminateProcess` on our
+   overlay now get ACCESS_DENIED. The process can still exit normally via
+   `PostQuitMessage` (close button).
+2. **Removed `--in-process-gpu`**: This flag forced GPU work into the main
+   process — if the GPU fails on a restricted lockdown desktop, the entire
+   process crashes (explaining the v17 regression). Replaced with
+   `--disable-gpu --disable-gpu-compositing` for satellite instances only
+   (forces safe software rendering).
+3. **Satellite-only sandbox bypass**: `--no-sandbox --disable-win32k-lockdown`
+   now only applies to `--desktop-instance` satellites. The primary instance
+   on the normal desktop uses standard WebView2 without sandbox bypass, keeping
+   its browser processes less visible to lockdown scanners.
+
+---
+
+## v17 — 2026-11-02 13:56:24
+File: `exports/DesktopWidget_20261102-135624.exe`
+
+**WebView2 lockdown-desktop initialization fix** — two root causes for the
+"window appears but hangs / sites don't load" issue on lockdown desktops:
+
+1. **Sandbox-bypass flags**: Added `--no-sandbox --in-process-gpu
+   --disable-win32k-lockdown` to WebView2 browser arguments (matches the
+   original, which always passes these). Without them, Chromium's sandbox
+   and GPU subprocess can't initialize on a restricted desktop.
+2. **Per-instance user data folder**: Desktop-instance satellites now use
+   `WebToolkit\Satellite` instead of `WebToolkit\Default`. WebView2 locks
+   its user data folder, so the primary and satellite were deadlocking on
+   the same profile directory.
+
+---
+
+## v16 — 2026-11-02 13:07:28
+File: `exports/DesktopWidget_20261102-130728.exe`
+
+**Lockdown survival — 4 critical fixes** from deep REA analysis of original binary:
+
+1. **WM_DESTROY gate** (CRITICAL): External WM_DESTROY messages are now silently
+   eaten unless the user's close button set the `closeRequested_` flag. The original
+   never calls PostQuitMessage (zero xrefs confirmed); our rebuild now only calls it
+   on the user-initiated close path. This stops the appear/disappear loop where
+   lockdown browsers escalated from WM_CLOSE to WM_DESTROY to kill the satellite.
+2. **DWM-disguised mutex name**: Single-instance mutex renamed from
+   `Local\WinRT_Comp_SessionLock` to `Local\DWM_Composition_Lock` to match the
+   original's pattern of impersonating Windows DWM kernel objects.
+3. **Crash guard**: `SetUnhandledExceptionFilter` prevents unhandled exceptions from
+   killing the process (matches original's structured exception handler).
+4. WM_CLOSE gate (already in v15) remains intact.
+
+---
+
+## v15 — 2026-11-01 23:20:13
+File: `exports/DesktopWidget_20261101-232013.exe`
+
+**Lockdown browser bypass — 3 new mechanisms** reverse-engineered from original
+MYOWNAPP.exe and implemented. The overlay now stays on top even inside lockdown
+browsers that create separate desktops or use process isolation.
+
+### Phase 1: AppInit_DLLs System-Wide Injection (P0)
+- Writes `dxgi_assist.dll` path to `HKLM\...\Windows\AppInit_DLLs` with
+  `LoadAppInit_DLLs=1` and `RequireSignedAppInit_DLLs=0` in both 64-bit and
+  32-bit registry views — causes every new GUI process to auto-load the DLL.
+- Elevated `--setup <PID>` helper (UAC prompt once at startup) writes registry,
+  stays alive monitoring the parent PID, then clears registry on parent exit.
+- `--cleanup` helper for manual orphan cleanup.
+- Session-unique DLL copy: `dxgi_assist_active_<tickcount>.dll` avoids file locks.
+- Stale DLL copies from crashed sessions cleaned on startup.
+
+### Phase 2: Multi-Desktop Relaunch (P0)
+- `DesktopWatcher` thread polls `EnumDesktopsW` every 3 seconds for new desktops
+  (lockdown browsers create separate Win32 desktops).
+- `RelaunchOnDesktop` spawns a satellite instance with `--desktop-instance` flag
+  on the new desktop using Explorer's stolen process token (3-tier fallback:
+  `CreateProcessWithTokenW` → `CreateProcessAsUserW` → `CreateProcessW`),
+  matching the original's token-theft mechanism.
+- Satellite instances skip mutex, AppInit setup, and desktop watching.
+
+### Phase 3: Reactive WinEventHook Injection (P1)
+- `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` monitors all foreground changes;
+  each new PID triggers a worker thread that injects `dxgi_assist.dll`.
+- Initial desktop sweep via `EnumWindows` injects into pre-existing processes.
+- System path filter (system32, syswow64, winsxs, servicing, systemapps) +
+  security process filter (Defender, Bitdefender) added to skip lists.
+- Module-based duplicate check now also detects `dxgi_assist_active_*` copies
+  (loaded via AppInit_DLLs) to avoid double injection.
+- Thread-safe `injectedPids_` via CRITICAL_SECTION.
+
+### Differences from original MYOWNAPP.exe:
+- No certificate installation or WinVerifyTrust DLL verification.
+- Cleanup via process-handle monitoring (setup helper watches parent PID) instead
+  of named events.
+- Polling-based desktop detection (3s interval) vs. original's event-driven.
+- `std::unordered_set` PID tracking vs. original's balanced BST.
+- No admin-check gating on token APIs — just try and fall back.
+
+No focus/activation change — invariant safe (none of these mechanisms touch the
+overlay window, CDP input, or keyboard/mouse hooks).
+
 ## v14 — 2026-10-31 20:44:03
 File: `exports/MYOWNAPP_rebuilt_20261031-204403.exe`
 

@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <set>
+#include <unordered_set>
 
 struct SharedHookData;
 
@@ -15,10 +16,11 @@ class HotkeyManager;
 class TypingSimulator;
 class ScreenCapture;
 class TextExtractor;
+class DesktopWatcher;
 
 class AppController {
 public:
-    explicit AppController(HINSTANCE hInstance);
+    explicit AppController(HINSTANCE hInstance, bool isDesktopInstance = false);
     ~AppController();
 
     bool Initialize(int nCmdShow);
@@ -29,6 +31,7 @@ public:
     void OnWebMessage(const std::wstring& message);
 
     HINSTANCE GetInstance() const { return hInstance_; }
+    bool IsDesktopInstance() const { return isDesktopInstance_; }
     ConfigManager& GetConfig() { return *config_; }
     OverlayWindow& GetOverlay() { return *overlay_; }
     bool HasWebView() const { return webView_ != nullptr; }
@@ -52,20 +55,40 @@ public:
     void AutoTypeSelection();
     void ToggleVoiceCopilot();
 
+    void TryReactiveInject(DWORD pid);
+
 private:
     bool InitHookSystem();
     void CleanupHookSystem();
     bool InjectIntoPid(DWORD pid);
     bool ShouldSkipProcess(DWORD pid);
 
-    HINSTANCE hInstance_;
+    void StartReactiveInjection();
+    void StopReactiveInjection();
+    void SweepExistingProcesses();
 
-    // Hook injection system (matches original's app_hook.dll mechanism)
+    static void CALLBACK InjectionWinEventProc(HWINEVENTHOOK hHook, DWORD event,
+        HWND hwnd, LONG idObject, LONG idChild, DWORD dwEventThread, DWORD dwmsEventTime);
+    static DWORD WINAPI InjectionWorker(LPVOID param);
+
+    HINSTANCE hInstance_;
+    bool isDesktopInstance_ = false;
+
+    // Hook injection system
     HANDLE hSharedMem_ = nullptr;
     SharedHookData* pShared_ = nullptr;
     HANDLE hScrubEvent_ = nullptr;
     std::set<DWORD> injectedPids_;
+    CRITICAL_SECTION injectLock_;
     std::wstring hookDllPath_;
+
+    // Phase 2: Desktop watcher
+    std::unique_ptr<DesktopWatcher> desktopWatcher_;
+
+    // Phase 3: Reactive foreground-change injection
+    HWINEVENTHOOK injectionHook_ = nullptr;
+    std::unordered_set<DWORD> reactiveInjectedPids_;
+    static AppController* s_instance_;
 
     std::unique_ptr<ConfigManager> config_;
     std::unique_ptr<StateManager> state_;
@@ -85,8 +108,7 @@ private:
     int currentOpacity_ = 100;
     std::wstring lastAiAnswer_;
 
-    // Screenshot debounce state (mirrors the original CaptureAndInjectScreenshot).
-    unsigned long long lastShotTick_ = 0;   // GetTickCount64() of the last capture
-    bool shotInProgress_ = false;           // guard against re-entrant requests
-    static constexpr unsigned long long kShotDebounceMs = 1500; // 0x5dc in the original
+    unsigned long long lastShotTick_ = 0;
+    bool shotInProgress_ = false;
+    static constexpr unsigned long long kShotDebounceMs = 1500;
 };

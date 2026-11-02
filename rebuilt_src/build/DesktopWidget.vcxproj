@@ -376,6 +376,8 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\AppController.cpp" />
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\ConfigManager.cpp" />
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\StateManager.cpp" />
+    <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\RegistrySetup.cpp" />
+    <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\app\DesktopWatcher.cpp" />
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\OverlayWindow.cpp" />
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\ui\ViewportManager.cpp" />
     <ClCompile Include="C:\Users\LENOVO\Desktop\REA2\rebuilt_src\src\browser\WebViewManager.cpp" />

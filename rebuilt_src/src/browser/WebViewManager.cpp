@@ -1,8 +1,8 @@
+#include <WinSock2.h>
 #include "WebViewManager.h"
 #include "../app/AppController.h"
 #include "../app/ConfigManager.h"
 #include "../automation/ScreenCapture.h"
-#include <WebView2EnvironmentOptions.h>
 #include <ShlObj.h>
 #include <wincrypt.h>
 #include <filesystem>
@@ -21,14 +21,62 @@ WebViewManager::~WebViewManager() {
     if (webViewController_) {
         webViewController_->Close();
     }
+    if (edgeProcess_) {
+        TerminateProcess(edgeProcess_, 0);
+        CloseHandle(edgeProcess_);
+    }
 }
 
 std::wstring WebViewManager::GetUserDataFolder() const {
-    wchar_t appData[MAX_PATH]{};
-    SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appData);
-    fs::path dataDir = fs::path(appData) / L"Microsoft" / L"WebToolkit" / L"Default";
+    wchar_t exePath[MAX_PATH]{};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    fs::path baseDir = fs::path(exePath).parent_path();
+    fs::path dataDir;
+    if (controller_.IsDesktopInstance()) {
+        dataDir = baseDir / (L"webview2_data_" + std::to_wstring(GetCurrentProcessId()));
+    } else {
+        dataDir = baseDir / L"webview2_data_Default";
+        try {
+            for (auto& entry : fs::directory_iterator(baseDir)) {
+                if (entry.is_directory()) {
+                    auto name = entry.path().filename().wstring();
+                    if (name.find(L"webview2_data_") == 0 && name != L"webview2_data_Default") {
+                        try { fs::remove_all(entry.path()); } catch (...) {}
+                    }
+                }
+            }
+        } catch (...) {}
+    }
     fs::create_directories(dataDir);
     return dataDir.wstring();
+}
+
+std::wstring WebViewManager::FindBrowserExecutableFolder() const {
+    fs::path evergreenBase = L"C:\\Program Files (x86)\\Microsoft\\EdgeWebView\\Application";
+    try {
+        if (fs::exists(evergreenBase)) {
+            for (auto& entry : fs::directory_iterator(evergreenBase)) {
+                if (entry.is_directory()) {
+                    if (fs::exists(entry.path() / L"msedgewebview2.exe"))
+                        return entry.path().wstring();
+                }
+            }
+        }
+    } catch (...) {}
+
+    fs::path edgeBase = L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application";
+    try {
+        if (fs::exists(edgeBase)) {
+            for (auto& entry : fs::directory_iterator(edgeBase)) {
+                if (entry.is_directory()) {
+                    if (fs::exists(entry.path() / L"msedge.exe"))
+                        return entry.path().wstring();
+                }
+            }
+        }
+    } catch (...) {}
+
+    return {};
 }
 
 RECT WebViewManager::GetWebViewBounds() const {
@@ -40,29 +88,176 @@ RECT WebViewManager::GetWebViewBounds() const {
     return rc;
 }
 
-bool WebViewManager::Initialize(HWND parentHwnd) {
-    parentHwnd_ = parentHwnd;
+// --- Docked Edge mode (satellite / lockdown desktop) ---
 
-    std::wstring userDataFolder = GetUserDataFolder();
+std::wstring WebViewManager::FindEdgePath() const {
+    const wchar_t* paths[] = {
+        L"C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        L"C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe"
+    };
+    for (auto p : paths) {
+        if (fs::exists(p)) return p;
+    }
+    HKEY hKey = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\msedge.exe",
+            0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        wchar_t val[MAX_PATH]{};
+        DWORD sz = sizeof(val);
+        if (RegQueryValueExW(hKey, nullptr, nullptr, nullptr,
+                reinterpret_cast<LPBYTE>(val), &sz) == ERROR_SUCCESS) {
+            RegCloseKey(hKey);
+            if (fs::exists(val)) return val;
+        } else {
+            RegCloseKey(hKey);
+        }
+    }
+    wchar_t found[MAX_PATH]{};
+    if (SearchPathW(nullptr, L"msedge.exe", nullptr, MAX_PATH, found, nullptr))
+        return found;
+    return {};
+}
 
-    // CRITICAL (matches original MYOWNAPP.exe): disable Chromium's native-window
-    // occlusion detection and background throttling via additional browser args.
-    // By default Chromium marks the WebView's renderer "occluded" when another
-    // window covers it (e.g. a topmost / full-screen locked-down exam app). Once
-    // occluded, the renderer pauses painting AND silently drops injected input,
-    // so the user cannot type into the overlay even though its caret blinks.
-    // Disabling CalculateNativeWinOcclusion keeps the renderer live regardless of
-    // what sits on top. (The original additionally passes --no-sandbox /
-    // --in-process-gpu / --disable-win32k-lockdown; those weaken the browser
-    // sandbox and are not needed for the input fix, so they are intentionally
-    // omitted. Add them here only if exact parity is required.)
-    auto options = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-    options->put_AdditionalBrowserArguments(
-        L"--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling,"
-        L"msWebView2BrowserHitTransparent");
+struct EdgeEnumCtx {
+    DWORD targetPid;
+    HWND  foundHwnd;
+};
+
+BOOL CALLBACK WebViewManager::EdgeEnumProc(HWND hwnd, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<EdgeEnumCtx*>(lParam);
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid != ctx->targetPid) return TRUE;
+    RECT rc{};
+    GetWindowRect(hwnd, &rc);
+    if ((rc.right - rc.left) < 150 || (rc.bottom - rc.top) < 150) return TRUE;
+    wchar_t cls[256]{};
+    GetClassNameW(hwnd, cls, 256);
+    if (wcscmp(cls, L"Chrome_WidgetWin_1") == 0 ||
+        wcscmp(cls, L"Chrome_WidgetWin_0") == 0) {
+        ctx->foundHwnd = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+struct EdgeFinderParam {
+    WebViewManager* self;
+    DWORD edgePid;
+    HWND overlayHwnd;
+};
+
+DWORD WINAPI WebViewManager::EdgeFinderThread(LPVOID param) {
+    auto* p = static_cast<EdgeFinderParam*>(param);
+    HWND found = nullptr;
+    for (int i = 0; i < 100 && !found; i++) {
+        Sleep(100);
+        EdgeEnumCtx ctx{p->edgePid, nullptr};
+        EnumWindows(EdgeEnumProc, reinterpret_cast<LPARAM>(&ctx));
+        found = ctx.foundHwnd;
+    }
+    if (found) {
+        LONG style = GetWindowLongW(found, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX |
+                    WS_MAXIMIZEBOX | WS_SYSMENU | WS_POPUP);
+        style |= WS_CHILD | WS_VISIBLE;
+        SetWindowLongW(found, GWL_STYLE, style);
+
+        LONG exStyle = GetWindowLongW(found, GWL_EXSTYLE);
+        exStyle &= ~(WS_EX_APPWINDOW | WS_EX_WINDOWEDGE);
+        SetWindowLongW(found, GWL_EXSTYLE, exStyle);
+
+        SetParent(found, p->overlayHwnd);
+
+        RECT rc{};
+        GetClientRect(p->overlayHwnd, &rc);
+        rc.top += WebViewManager::kToolbarHeight;
+        SetWindowPos(found, nullptr, rc.left, rc.top,
+            rc.right - rc.left, rc.bottom - rc.top,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        p->self->edgeHwnd_ = found;
+    }
+    delete p;
+    return 0;
+}
+
+bool WebViewManager::LaunchAndDockEdge() {
+    dockedEdgeMode_ = true;
+
+    std::wstring edgePath = FindEdgePath();
+    if (edgePath.empty()) return false;
+
+    std::wstring url = ResolveUrl(siteRotation_[currentSiteIndex_]);
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    int cdpPort = 9222;
+    if (sock != INVALID_SOCKET) {
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0;
+        if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+            int len = sizeof(addr);
+            if (getsockname(sock, reinterpret_cast<sockaddr*>(&addr), &len) == 0)
+                cdpPort = ntohs(addr.sin_port);
+        }
+        closesocket(sock);
+    }
+
+    wchar_t appData[MAX_PATH]{};
+    SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, appData);
+    fs::path dataDir = fs::path(appData) / L"DesktopWidget"
+        / (L"edge_profile_" + std::to_wstring(cdpPort));
+    fs::create_directories(dataDir);
+
+    std::wstring cmdLine = L"\"" + edgePath + L"\"";
+    cmdLine += L" --app=\"" + url + L"\"";
+    cmdLine += L" --remote-debugging-port=" + std::to_wstring(cdpPort);
+    cmdLine += L" --remote-allow-origins=*";
+    cmdLine += L" --user-data-dir=\"" + dataDir.wstring() + L"\"";
+    cmdLine += L" --use-fake-ui-for-media-stream"
+               L" --autoplay-policy=no-user-gesture-required"
+               L" --enable-features=WebSpeechAPI"
+               L" --enable-speech-input"
+               L" --allow-running-insecure-content"
+               L" --no-first-run"
+               L" --no-default-browser-check"
+               L" --no-sandbox"
+               L" --test-type"
+               L" --disable-features=Translate"
+               L" --disable-blink-features=AutomationControlled"
+               L" --force-device-scale-factor=1";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    if (!CreateProcessW(nullptr, const_cast<LPWSTR>(cmdLine.c_str()),
+            nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        return false;
+    }
+
+    edgeProcess_ = pi.hProcess;
+    edgePid_ = pi.dwProcessId;
+    CloseHandle(pi.hThread);
+
+    auto* fp = new EdgeFinderParam{this, edgePid_, parentHwnd_};
+    HANDLE hThread = CreateThread(nullptr, 0, EdgeFinderThread, fp, 0, nullptr);
+    if (hThread) CloseHandle(hThread);
+
+    return true;
+}
+
+// --- WebView2 mode (normal desktop) ---
+
+bool WebViewManager::CreateWebViewEnvironment(const std::wstring& browserPath,
+                                               const std::wstring& userDataFolder) {
+    LPCWSTR browserDir = browserPath.empty() ? nullptr : browserPath.c_str();
 
     HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(
-        nullptr, userDataFolder.c_str(), options.Get(),
+        browserDir, userDataFolder.c_str(), nullptr,
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [this](HRESULT result, ICoreWebView2Environment* env) -> HRESULT {
                 OnEnvironmentCreated(result, env);
@@ -72,8 +267,29 @@ bool WebViewManager::Initialize(HWND parentHwnd) {
     return SUCCEEDED(hr);
 }
 
+bool WebViewManager::Initialize(HWND parentHwnd) {
+    parentHwnd_ = parentHwnd;
+    if (controller_.IsDesktopInstance()) {
+        return LaunchAndDockEdge();
+    }
+    std::wstring userDataFolder = GetUserDataFolder();
+    return CreateWebViewEnvironment(L"", userDataFolder);
+}
+
 void WebViewManager::OnEnvironmentCreated(HRESULT result, ICoreWebView2Environment* env) {
-    if (FAILED(result) || !env) return;
+    if (FAILED(result) || !env) {
+        if (initRetries_ < 3 && parentHwnd_) {
+            initRetries_++;
+            wchar_t exePath[MAX_PATH]{};
+            GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+            fs::path retryDir = fs::path(exePath).parent_path()
+                / (L"webview2_data_retry" + std::to_wstring(initRetries_)
+                   + L"_" + std::to_wstring(GetCurrentProcessId()));
+            fs::create_directories(retryDir);
+            CreateWebViewEnvironment(L"", retryDir.wstring());
+        }
+        return;
+    }
     environment_ = env;
 
     env->CreateCoreWebView2Controller(
@@ -372,6 +588,12 @@ void WebViewManager::ExecuteScript(const std::wstring& script) {
 }
 
 void WebViewManager::OnParentResized() {
+    if (edgeHwnd_) {
+        RECT bounds = GetWebViewBounds();
+        SetWindowPos(edgeHwnd_, nullptr, bounds.left, bounds.top,
+            bounds.right - bounds.left, bounds.bottom - bounds.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     if (webViewController_) {
         RECT bounds = GetWebViewBounds();
         webViewController_->put_Bounds(bounds);
@@ -853,6 +1075,11 @@ void WebViewManager::TriggerSubmit() {
 }
 
 void WebViewManager::ResizeToBounds(RECT bounds) {
+    if (edgeHwnd_) {
+        SetWindowPos(edgeHwnd_, nullptr, bounds.left, bounds.top,
+            bounds.right - bounds.left, bounds.bottom - bounds.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     if (webViewController_) {
         webViewController_->put_Bounds(bounds);
     }

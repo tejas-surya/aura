@@ -130,6 +130,11 @@ void OverlayWindow::Destroy() {
     UnregisterClassW(kClassName, controller_.GetInstance());
 }
 
+void OverlayWindow::RequestClose() {
+    closeRequested_ = true;
+    PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+}
+
 void OverlayWindow::SetOpacity(int percent) {
     currentOpacity_ = std::clamp(percent, 0, 100);
     // WS_EX_LAYERED is permanent (required for WDA_EXCLUDEFROMCAPTURE to cover
@@ -428,6 +433,7 @@ LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
                 if (pt.x >= rightBtnLeft && pt.x < rc.right - 6) {
                     int btnIdx = (rc.right - 6 - pt.x) / 28;  // 0=close, 1=minimize
                     if (btnIdx == 0) {
+                        closeRequested_ = true;
                         PostMessageW(hwnd_, WM_CLOSE, 0, 0);
                     } else if (btnIdx == 1) {
                         ShowWindow(hwnd_, SW_MINIMIZE);
@@ -464,7 +470,13 @@ LRESULT OverlayWindow::HandleMessage(UINT msg, WPARAM wParam, LPARAM lParam) {
             break;
         }
 
+        case WM_CLOSE:
+            if (!closeRequested_) return 0;
+            DestroyWindow(hwnd_);
+            return 0;
+
         case WM_DESTROY:
+            if (!closeRequested_) return 0;
             PostQuitMessage(0);
             return 0;
     }
